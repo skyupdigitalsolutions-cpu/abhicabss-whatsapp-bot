@@ -1,3 +1,4 @@
+const dayjs = require('dayjs');
 const { STATES } = require('../states');
 const { transition } = require('../sessionManager');
 const { t } = require('../../utils/i18n');
@@ -14,12 +15,32 @@ const TRIP_TYPES = [
   { id: 'TRIP_HOURLY', value: 'HOURLY', key: 'trip_hourly', number: 4 },
 ];
 
+/**
+ * Like t(), but returns `fallback` when the key is missing in the customer's
+ * language file, so a language that has not been updated yet never shows a raw key.
+ */
+function tOr(language, key, fallback) {
+  try {
+    const v = t(language, key);
+    if (!v || typeof v !== 'string' || v.includes(key)) return fallback;
+    return v;
+  } catch (e) {
+    return fallback;
+  }
+}
+
 // ── STEP 1: Trip type ──────────────────────────────────────────────
 
 async function promptTripType(ctx) {
   const items = TRIP_TYPES.map((tt) => ({ id: tt.id, number: tt.number, label: t(ctx.language, tt.key) }));
   const { rows, map } = toNumbered(items);
-  await ctx.send.list('ask_trip_type', 'ask_trip_type', [{ title: 'Trip Type', rows }]);
+  // The list button needs a SHORT label (max 20 chars). It used to reuse the
+  // question text, which got cut off as "What type of trip do".
+  await ctx.send.listRaw(
+    t(ctx.language, 'ask_trip_type'),
+    tOr(ctx.language, 'btn_select_trip', 'Select Trip'),
+    [{ title: 'Trip Type', rows }]
+  );
   await rememberOptions(ctx.session, map);
 }
 
@@ -70,7 +91,7 @@ async function handleBookingPickup(ctx) {
 
   if (session.draft.tripType === 'HOURLY') {
     await transition(session, STATES.BOOKING_DATE);
-    await ctx.send.text('ask_date');
+    await promptDate(ctx);
   } else {
     await transition(session, STATES.BOOKING_DROP);
     await ctx.send.text('ask_drop');
@@ -100,21 +121,74 @@ async function handleBookingDrop(ctx) {
   session.draft.drop = location;
   await session.save();
   await transition(session, STATES.BOOKING_DATE);
-  await ctx.send.text('ask_date');
+  await promptDate(ctx);
 }
 
-// ── STEP 4: Date ─────────────────────────────────────────────────────
+// ── STEP 4: Date (calendar list) ────────────────────────────────────
+
+/**
+ * Sends the calendar: a tap-to-select WhatsApp list with Today, Tomorrow, the
+ * following days, and an "Another date" row for anything else.
+ * For the return date of a round trip, the list starts from the pickup day.
+ */
+async function promptDate(ctx, { returnTrip = false } = {}) {
+  const { language, session } = ctx;
+  const labels = {
+    today: tOr(language, 'date_today', 'Today'),
+    tomorrow: tOr(language, 'date_tomorrow', 'Tomorrow'),
+    another: tOr(language, 'date_another', 'Another date'),
+    anotherHint: tOr(language, 'date_another_hint', 'Type it, e.g. 25 October'),
+  };
+  const from = returnTrip && session.draft.pickupAt ? session.draft.pickupAt : undefined;
+  const rows = dateParser.getDateListRows({ from, labels });
+
+  await ctx.send.listRaw(
+    t(language, returnTrip ? 'ask_return_date' : 'ask_date'),
+    tOr(language, 'date_pick_button', 'Pick a date'),
+    [{ title: tOr(language, 'date_section_title', 'Dates'), rows }]
+  );
+}
+
+/**
+ * Reads the customer's date answer, whether they tapped a calendar row or typed.
+ * Returns { resolved } (a dayjs date), { other: true } when they tapped
+ * "Another date", or {} when it could not be understood.
+ */
+function readDateAnswer(message) {
+  const title = message.text || message.interactiveTitle || '';
+
+  if (message.interactiveId === 'DATE_OTHER' || /^another date$/i.test(title.trim())) {
+    return { other: true };
+  }
+
+  const tapped = dateParser.parseDateReply(message.interactiveId);
+  const resolved = dateParser.resolveDatePhrase(tapped || title);
+  return resolved ? { resolved } : {};
+}
 
 async function handleBookingDate(ctx) {
   const { message, session } = ctx;
-  const resolved = dateParser.resolveDatePhrase(message.text || message.interactiveTitle);
+  const answer = readDateAnswer(message);
 
-  if (!resolved) {
-    await ctx.send.text('ask_date');
+  if (answer.other) {
+    await ctx.send.raw(
+      tOr(ctx.language, 'ask_date_typed', '📅 Please type the travel date, for example 25 October or 25/10.')
+    );
     return;
   }
 
-  session.draft._pendingDate = resolved.toISOString(); // temp holder until time is combined
+  if (!answer.resolved) {
+    await promptDate(ctx);
+    return;
+  }
+
+  if (answer.resolved.isBefore(dateParser.now().startOf('day'))) {
+    await ctx.send.raw(tOr(ctx.language, 'date_in_past', 'That date has already passed. Please choose a date from today onwards.'));
+    await promptDate(ctx);
+    return;
+  }
+
+  session.draft._pendingDate = answer.resolved.toISOString(); // temp holder until time is combined
   await session.save();
   await transition(session, STATES.BOOKING_TIME);
   await ctx.send.text('ask_time');
@@ -131,12 +205,16 @@ async function handleBookingTime(ctx) {
     return;
   }
 
-  const dayjsDate = require('dayjs').tz(session.draft._pendingDate, dateParser.TZ);
+  // _pendingDate is an ISO instant. Parse it as an instant and convert to India
+  // time. (dayjs.tz(iso, TZ) reads the clock digits as India time instead, which
+  // moved every booking one day earlier.)
+  const dayjsDate = dayjs(session.draft._pendingDate).tz(dateParser.TZ);
   const combined = dateParser.combineDateTime(dayjsDate, time);
 
   if (dateParser.isPast(combined)) {
-    await ctx.send.raw(t(ctx.language, 'ask_date')); // ask again — cannot book in the past
+    await ctx.send.raw(tOr(ctx.language, 'time_in_past', 'That time has already passed. Please choose a later date or time.'));
     await transition(session, STATES.BOOKING_DATE);
+    await promptDate(ctx);
     return;
   }
 
@@ -145,7 +223,7 @@ async function handleBookingTime(ctx) {
 
   if (session.draft.tripType === 'ROUND_TRIP') {
     await transition(session, STATES.BOOKING_RETURN_DATE);
-    await ctx.send.text('ask_return_date');
+    await promptDate(ctx, { returnTrip: true });
     return;
   }
   if (session.draft.tripType === 'HOURLY') {
@@ -161,12 +239,28 @@ async function handleBookingTime(ctx) {
 
 async function handleBookingReturnDate(ctx) {
   const { message, session } = ctx;
-  const resolved = dateParser.resolveDatePhrase(message.text || message.interactiveTitle);
-  if (!resolved) {
-    await ctx.send.text('ask_return_date');
+  const answer = readDateAnswer(message);
+
+  if (answer.other) {
+    await ctx.send.raw(
+      tOr(ctx.language, 'ask_date_typed', '📅 Please type the travel date, for example 25 October or 25/10.')
+    );
     return;
   }
-  session.draft._pendingReturnDate = resolved.toISOString();
+
+  if (!answer.resolved) {
+    await promptDate(ctx, { returnTrip: true });
+    return;
+  }
+
+  const pickupDay = session.draft.pickupAt ? dayjs(session.draft.pickupAt).tz(dateParser.TZ).startOf('day') : null;
+  if (answer.resolved.isBefore(dateParser.now().startOf('day')) || (pickupDay && answer.resolved.isBefore(pickupDay))) {
+    await ctx.send.raw(tOr(ctx.language, 'return_before_pickup', 'The return date cannot be before your pickup date. Please choose again.'));
+    await promptDate(ctx, { returnTrip: true });
+    return;
+  }
+
+  session.draft._pendingReturnDate = answer.resolved.toISOString();
   await session.save();
   await transition(session, STATES.BOOKING_RETURN_TIME);
   await ctx.send.text('ask_return_time');
@@ -179,13 +273,14 @@ async function handleBookingReturnTime(ctx) {
     await ctx.send.text('ask_return_time');
     return;
   }
-  const dayjsDate = require('dayjs').tz(session.draft._pendingReturnDate, dateParser.TZ);
+  const dayjsDate = dayjs(session.draft._pendingReturnDate).tz(dateParser.TZ);
   const combined = dateParser.combineDateTime(dayjsDate, time);
 
-  if (combined.isBefore(dayjsDate.tz ? require('dayjs')(session.draft.pickupAt) : null)) {
+  if (combined.isBefore(dayjs(session.draft.pickupAt))) {
     // return before pickup — ask again
-    await ctx.send.text('ask_return_date');
+    await ctx.send.raw(tOr(ctx.language, 'return_before_pickup', 'The return date cannot be before your pickup date. Please choose again.'));
     await transition(session, STATES.BOOKING_RETURN_DATE);
+    await promptDate(ctx, { returnTrip: true });
     return;
   }
 
@@ -283,7 +378,11 @@ async function showVehicleOptions(ctx) {
   const { rows: numberedRows, map } = toNumbered(rows);
 
   await transition(session, STATES.BOOKING_VEHICLE_SELECTION);
-  await ctx.send.list('select_vehicle', 'select_vehicle', [{ title: 'Vehicles', rows: numberedRows }]);
+  await ctx.send.listRaw(
+    t(ctx.language, 'select_vehicle'),
+    tOr(ctx.language, 'btn_select_vehicle', 'Select Vehicle'),
+    [{ title: 'Vehicles', rows: numberedRows }]
+  );
   await rememberOptions(session, map);
 }
 
@@ -365,6 +464,7 @@ async function handleBookingFareConfirmation(ctx) {
 
 module.exports = {
   promptTripType,
+  promptDate,
   handleBookingTripType,
   handleBookingPickup,
   handleBookingDrop,
