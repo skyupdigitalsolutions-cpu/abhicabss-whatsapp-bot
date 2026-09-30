@@ -1,10 +1,10 @@
-const { SUPPORTED_LANGUAGES, t } = require('../../utils/i18n');
+const { AVAILABLE_LANGUAGES, t } = require('../../utils/i18n');
 const { STATES } = require('../states');
 const { transition } = require('../sessionManager');
 const { toNumbered, rememberOptions } = require('../numberedMenu');
 
 async function promptLanguageSelection(ctx) {
-  const items = SUPPORTED_LANGUAGES.map((l, i) => ({
+  const items = AVAILABLE_LANGUAGES.map((l, i) => ({
     id: `LANG_${l.code}`,
     number: i + 1,
     label: l.label,
@@ -22,11 +22,11 @@ async function handleLanguageSelection(ctx) {
   const match = (message.interactiveId || '').match(/^LANG_(.+)$/);
   const code = match
     ? match[1]
-    : SUPPORTED_LANGUAGES.find(
+    : AVAILABLE_LANGUAGES.find(
         (l) => l.label.toLowerCase() === (message.text || '').toLowerCase().trim()
       )?.code;
 
-  if (!code || !SUPPORTED_LANGUAGES.some((l) => l.code === code)) {
+  if (!code || !AVAILABLE_LANGUAGES.some((l) => l.code === code)) {
     await promptLanguageSelection(ctx);
     return;
   }
