@@ -1,0 +1,202 @@
+// ABHI CABS WhatsApp bot — PostgreSQL schema (Prisma)
+//
+// Mirrors the shapes the codebase previously stored in MongoDB (see the old
+// src/models/*.js for reference), using JSONB columns for nested structures
+// (pickup/drop/fare/draft/etc) so the JS objects the rest of the codebase
+// already works with stay structurally the same — only the persistence layer
+// changed. Scalar columns are used for anything that needs indexing,
+// uniqueness, or filtering (status, idempotency keys, phone numbers, dates).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Customer {
+  id                 String   @id @default(uuid())
+  whatsappNumber     String   @unique
+  name               String?
+  email              String?
+  preferredLanguage  String   @default("en")
+  customerType       String   @default("RETAIL") // RETAIL | CORPORATE
+  companyName        String?
+  gstNumber          String?
+  lastInteractionAt  DateTime @default(now())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  sessions      Session[]
+  bookings      Booking[]
+  supportTickets SupportTicket[]
+
+  @@map("customers")
+}
+
+model Session {
+  id                    String    @id @default(uuid())
+  whatsappNumber        String    @unique
+  customerId            String?
+  customer              Customer? @relation(fields: [customerId], references: [id])
+
+  language              String?
+  state                 String    @default("LANGUAGE_SELECTION")
+  previousState          String?
+
+  // The in-progress draft booking being built during BOOKING_* states.
+  // Kept as one JSONB blob (matching the old Mongoose sub-document) rather
+  // than normalized columns, since it's write-heavy, short-lived, and only
+  // ever read/written wholesale by the conversation handlers.
+  draft                 Json      @default("{}")
+
+  activeBookingId        String?
+  activePaymentId        String?
+  pendingIdempotencyKey  String?
+
+  // number -> interactive-id map for the currently-shown numbered menu
+  // (see conversation/numberedMenu.js)
+  pendingOptionsMap      Json      @default("{}")
+
+  humanHandoff           Boolean   @default(false)
+  handoffReason          String?
+
+  lastMessageAt          DateTime  @default(now())
+  expiresAt              DateTime?
+
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@map("bot_sessions")
+}
+
+model Vehicle {
+  id                     String   @id @default(uuid())
+  vehicleId              String   @unique
+  name                   String
+  category               String   // SEDAN | SUV | PREMIUM | LUXURY | TEMPO_TRAVELLER | BUS
+  seatingCapacity         Int
+  ac                     Boolean  @default(true)
+  supportedTripTypes      String[] @default(["ONE_WAY", "ROUND_TRIP", "AIRPORT", "HOURLY"])
+  baseFarePerKm           Float
+  baseFarePerHour         Float?
+  driverAllowancePerDay   Float    @default(300)
+  active                 Boolean  @default(true)
+
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@map("bot_vehicles")
+}
+
+model Booking {
+  id              String   @id @default(uuid())
+  bookingNumber   String   @unique
+  channel         String   @default("WHATSAPP") // WEBSITE | WHATSAPP | ADMIN
+
+  customerId      String
+  customer        Customer @relation(fields: [customerId], references: [id])
+
+  passenger       Json     // { name, phone, email, passengerCount }
+  customerType    String   @default("RETAIL")
+  companyName     String?
+  gstNumber       String?
+
+  tripType        String   // ONE_WAY | ROUND_TRIP | AIRPORT | HOURLY
+  pickup          Json     // { address, latitude, longitude }
+  drop            Json?
+  pickupAt        DateTime
+  returnAt        DateTime?
+  rentalHours     Int?
+
+  vehicle         Json     // { vehicleId, name, category }
+  fare            Json     // { baseFare, additionalCharges, driverAllowance, tax, surge, total, currency }
+
+  status          String   @default("CREATED")
+  driver          Json?    // { name, phone, vehicleNumber, assignedAt }
+  liveLocation    Json?    // { latitude, longitude, updatedAt }
+
+  paymentId       String?  @unique
+  payment         Payment? @relation(fields: [paymentId], references: [id])
+
+  cancellation    Json?    // { cancelledAt, reason, fee, refundAmount }
+  invoiceUrl      String?
+  specialRequests String?
+
+  idempotencyKey  String   @unique
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("bot_bookings")
+}
+
+model Payment {
+  id                 String   @id @default(uuid())
+  bookingId          String? // not unique — a booking can have multiple payment attempts (retries)
+  razorpayOrderId    String   @unique
+  razorpayPaymentId  String?
+  razorpaySignature  String?
+
+  amount             Int      // in paise
+  currency           String   @default("INR")
+  status             String   @default("CREATED") // CREATED|PENDING|CAPTURED|FAILED|TIMEOUT|CANCELLED|REFUNDED
+
+  attempt            Int      @default(1)
+  verifiedAt         DateTime?
+  failureReason      String?
+
+  idempotencyKey     String   @unique
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  booking            Booking?
+
+  @@index([bookingId])
+  @@map("bot_payments")
+}
+
+model SupportTicket {
+  id             String   @id @default(uuid())
+  customerId      String
+  customer        Customer @relation(fields: [customerId], references: [id])
+  whatsappNumber String
+  name            String?
+  bookingId       String?
+  category       String
+  message        String
+  conversationId String
+  status         String   @default("OPEN") // OPEN|IN_PROGRESS|RESOLVED|CLOSED
+  assignedTo     String?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("bot_support_tickets")
+}
+
+model ProcessedMessage {
+  id                String   @id @default(uuid())
+  whatsappMessageId String   @unique
+  whatsappNumber    String
+  processedAt       DateTime @default(now())
+
+  @@map("bot_processed_messages")
+}
+
+model AbandonedBooking {
+  id             String    @id @default(uuid())
+  whatsappNumber String
+  sessionId      String
+  snapshot       Json
+  abandonedAt    DateTime  @default(now())
+  followUpSentAt DateTime?
+  recovered      Boolean   @default(false)
+
+  createdAt      DateTime  @default(now())
+
+  @@map("bot_abandoned_bookings")
+}
