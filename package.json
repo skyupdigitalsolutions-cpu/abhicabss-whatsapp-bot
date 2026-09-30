@@ -8,6 +8,7 @@
     "start": "npx prisma db push && node src/server.js",
     "dev": "nodemon src/server.js",
     "test": "jest --runInBand",
+    "test:e2e": "node e2e.js",
     "seed:vehicles": "node src/utils/seedVehicles.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

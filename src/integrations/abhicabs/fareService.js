@@ -2,6 +2,7 @@ const { v4: uuid } = require('uuid');
 const env = require('../../config/env');
 const { getPrisma } = require('../../config/db');
 const backendHttp = require('./backendHttp');
+const { resolveDistanceKm } = require('./distanceService');
 
 // In-memory quote cache so a fare shown to the customer can be re-verified
 // at booking time without recomputing (and without letting the AI restate
@@ -61,7 +62,7 @@ async function getFareOptions({ tripType, pickup, drop, pickupAt, returnAt, rent
   const vehicles = await prisma.vehicle.findMany({
     where: { active: true, supportedTripTypes: { has: tripType } },
   });
-  const distanceKm = drop ? haversineKm(pickup, drop) || 50 : null; // 50km fallback if coords missing
+  const distanceKm = drop ? await resolveDistanceKm(pickup, drop) : null; // Google road distance, see distanceService.js
   const days =
     tripType === 'ROUND_TRIP' && returnAt
       ? Math.max(1, Math.ceil((new Date(returnAt) - new Date(pickupAt)) / 86400000))

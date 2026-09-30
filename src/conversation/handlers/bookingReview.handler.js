@@ -2,16 +2,18 @@ const { STATES } = require('../states');
 const { transition } = require('../sessionManager');
 const { t } = require('../../utils/i18n');
 const { callTool } = require('../../integrations/ai/tools');
-const { bookingIdempotencyKey, paymentIdempotencyKey } = require('../../utils/idempotency');
+const { bookingIdempotencyKey } = require('../../utils/idempotency');
 const { logger } = require('../../config/logger');
-const dayjs = require('dayjs');
+const { fmtDate, fmtTime, fmtDateTime, inr } = require('../../utils/format');
 const { toNumbered, rememberOptions } = require('../numberedMenu');
+
+// ── Passenger details: name, then number of passengers (asked in booking.handler.js) ──
 
 async function handleBookingCustomerName(ctx) {
   const { message, session, customer } = ctx;
   const name = (message.text || '').trim();
 
-  if (!name || name.length < 2) {
+  if (!name || name.length < 2 || name.length > 60) {
     await ctx.send.text('ask_name');
     return;
   }
@@ -21,8 +23,11 @@ async function handleBookingCustomerName(ctx) {
   await customer.save();
   await session.save();
 
-  await showBookingReview(ctx);
+  await transition(session, STATES.BOOKING_PASSENGERS);
+  await ctx.send.text('ask_passenger_count');
 }
+
+// ── Booking summary ─────────────────────────────────────────────────
 
 async function showBookingReview(ctx) {
   const { session } = ctx;
@@ -30,25 +35,22 @@ async function showBookingReview(ctx) {
 
   await transition(session, STATES.BOOKING_REVIEW);
 
-  const dateStr = dayjs(d.pickupAt).tz ? dayjs(d.pickupAt).format('DD MMM YYYY') : dayjs(d.pickupAt).format('DD MMM YYYY');
-  const timeStr = dayjs(d.pickupAt).format('h:mm A');
-
   const body =
     `${t(ctx.language, 'booking_summary_title')}\n\n` +
     `👤 ${d.passengerName}\n` +
-    `📱 ${session.whatsappNumber}\n\n` +
-    `📍 ${d.pickup.address}\n` +
-    (d.drop.address ? `📍 ${d.drop.address}\n` : '') +
-    `📅 ${dateStr}\n` +
-    `⏰ ${timeStr}\n` +
-    (d.returnAt ? `↩️ Return: ${dayjs(d.returnAt).format('DD MMM YYYY, h:mm A')}\n` : '') +
+    `📱 ${session.whatsappNumber}\n` +
+    `👥 ${d.passengerCount} passenger${d.passengerCount > 1 ? 's' : ''}\n\n` +
+    `📍 Pickup: ${d.pickup.address}\n` +
+    (d.drop?.address ? `🏁 Drop: ${d.drop.address}\n` : '') +
+    `📅 ${fmtDate(d.pickupAt)}\n` +
+    `⏰ ${fmtTime(d.pickupAt)}\n` +
+    (d.returnAt ? `↩️ Return: ${fmtDateTime(d.returnAt)}\n` : '') +
     (d.rentalHours ? `🕒 ${d.rentalHours} hours\n` : '') +
-    `🚗 ${d.vehicleClass}\n` +
-    `👥 ${d.passengerCount} passengers\n\n` +
-    `💰 Total: ₹${d.fare.total}`;
+    `🚗 ${d.vehicleName || d.vehicleClass}\n\n` +
+    `💰 Total fare: ${inr(d.fare.total)}`;
 
   const buttons = [
-    { id: 'REVIEW_CONFIRM', number: 1, label: t(ctx.language, 'confirm_and_pay'), maxTitleLength: 20 },
+    { id: 'REVIEW_CONFIRM', number: 1, label: t(ctx.language, 'confirm_booking'), maxTitleLength: 20 },
     { id: 'REVIEW_MODIFY', number: 2, label: t(ctx.language, 'modify'), maxTitleLength: 20 },
     { id: 'REVIEW_CANCEL', number: 3, label: t(ctx.language, 'cancel'), maxTitleLength: 20 },
   ];
@@ -60,28 +62,35 @@ async function showBookingReview(ctx) {
 
 async function handleBookingReview(ctx) {
   const { message, session } = ctx;
+  const typed = (message.text || '').trim();
 
-  if (message.interactiveId === 'REVIEW_MODIFY') {
-    const { promptTripType } = require('./booking.handler');
-    session.resetDraft();
-    await transition(session, STATES.BOOKING_TRIP_TYPE);
-    await promptTripType(ctx);
+  if (message.interactiveId === 'REVIEW_MODIFY' || /^(modify|change|edit)$/i.test(typed)) {
+    const { startBooking } = require('./booking.handler');
+    await startBooking(ctx);
     return;
   }
 
   if (message.interactiveId === 'REVIEW_CANCEL') {
     session.resetDraft();
+    await ctx.send.text('booking_cancelled');
     const { renderMainMenu } = require('./mainMenu.handler');
     await transition(session, STATES.MAIN_MENU);
     await renderMainMenu(ctx);
     return;
   }
 
-  // REVIEW_CONFIRM (default)
-  await createBookingAndStartPayment(ctx);
+  // Only an explicit Confirm creates a booking — stray text never does.
+  if (message.interactiveId === 'REVIEW_CONFIRM' || /^(confirm|yes|ok|y)$/i.test(typed)) {
+    await createBookingAndShowPaymentOptions(ctx);
+    return;
+  }
+
+  await showBookingReview(ctx);
 }
 
-async function createBookingAndStartPayment(ctx) {
+// ── Confirm Booking → save it → Select Payment Option ───────────────
+
+async function createBookingAndShowPaymentOptions(ctx) {
   const { session, customer } = ctx;
   const d = session.draft;
 
@@ -121,53 +130,16 @@ async function createBookingAndStartPayment(ctx) {
 
   const { booking } = result;
   session.activeBookingId = booking._id;
-  await transition(session, STATES.BOOKING_CREATED);
-  await ctx.send.text('booking_created');
-
-  await startPayment(ctx, booking);
-}
-
-async function startPayment(ctx, booking) {
-  const { session } = ctx;
-  const attempt = 1;
-  const payIdemKey = paymentIdempotencyKey(booking._id, attempt);
-
-  let order;
-  try {
-    order = await callTool('createPaymentOrder', {
-      bookingId: booking._id,
-      amountInRupees: booking.fare.total,
-      idempotencyKey: payIdemKey,
-      attempt,
-    });
-  } catch (err) {
-    logger.error({ err: err.message }, '[payment] createPaymentOrder failed');
-    await ctx.send.text('booking_api_failed');
-    return;
-  }
-
-  session.activePaymentId = order._id;
-  await transition(session, STATES.PAYMENT_PENDING);
-  session.pendingOptionsMap = {}; // no menu shown yet — cleared until a failure prompts retry buttons
   await session.save();
 
-  await ctx.send.text('amount_payable', { amount: booking.fare.total });
-
-  // In production, generate a Razorpay Checkout link/page (e.g. via
-  // Payment Links API) and send that URL here, OR hand the order.id +
-  // key_id to a WhatsApp Flow / mini-checkout webview. The customer
-  // completing checkout there is what ultimately calls back to
-  // /webhook/razorpay, which is the only thing allowed to mark this
-  // payment CAPTURED (see paymentService.verifyAndCapturePayment).
-  await ctx.send.raw(
-    `${t(ctx.language, 'please_pay')}\n\nOrder ID: ${order.razorpayOrderId}`
-  );
+  const { showPaymentOptions } = require('./payment.handler');
+  await showPaymentOptions(ctx, booking);
 }
 
 module.exports = {
   handleBookingCustomerName,
   showBookingReview,
   handleBookingReview,
-  createBookingAndStartPayment,
-  startPayment,
+  createBookingAndShowPaymentOptions,
+  createBookingAndStartPayment: createBookingAndShowPaymentOptions, // old name, kept for compatibility
 };

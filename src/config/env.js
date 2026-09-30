@@ -31,6 +31,16 @@ const env = {
   RAZORPAY_KEY_SECRET: required('RAZORPAY_KEY_SECRET'),
   RAZORPAY_WEBHOOK_SECRET: required('RAZORPAY_WEBHOOK_SECRET'),
 
+  // Road distance for fares (Google Distance Matrix API). Optional: without it,
+  // typed addresses fall back to a 50 km default and fares will be inaccurate.
+  GOOGLE_MAPS_API_KEY: required('GOOGLE_MAPS_API_KEY'),
+
+  // "Partial Payment" = this percentage of the fare, paid now. The rest is due later.
+  PARTIAL_PAYMENT_PERCENT: Math.min(99, Math.max(1, parseInt(required('PARTIAL_PAYMENT_PERCENT', '25'), 10) || 25)),
+
+  // Shown to customers under "Contact Us".
+  SUPPORT_PHONE: required('SUPPORT_PHONE', '+91 80960 00182'),
+
   SESSION_TIMEOUT_MINUTES: parseInt(required('SESSION_TIMEOUT_MINUTES', '30'), 10),
   ABANDONED_BOOKING_FOLLOWUP_MINUTES: parseInt(
     required('ABANDONED_BOOKING_FOLLOWUP_MINUTES', '45'),

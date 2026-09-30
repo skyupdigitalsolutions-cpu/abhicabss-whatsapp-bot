@@ -33,6 +33,35 @@ async function createOrder({ amountInRupees, receipt, notes = {} }) {
   return order; // { id, amount, currency, status, ... }
 }
 
+/**
+ * Create a Razorpay Payment Link — a hosted page the customer opens from
+ * WhatsApp and pays on (UPI / cards / netbanking). This is how a customer
+ * actually pays inside a chat: an Order alone has no page to pay on.
+ * The link is valid for 24 hours. Razorpay tells us it was paid via the
+ * `payment_link.paid` webhook, which is the only thing that confirms a booking.
+ */
+async function createPaymentLink({ amountInRupees, referenceId, description, customerName, customerPhone, notes = {} }) {
+  const digits = String(customerPhone || '').replace(/\D/g, '');
+  return getClient().paymentLink.create({
+    amount: Math.round(amountInRupees * 100),
+    currency: 'INR',
+    accept_partial: false,
+    reference_id: String(referenceId).slice(0, 40),
+    description: String(description).slice(0, 2000),
+    ...(customerName || digits
+      ? { customer: { ...(customerName ? { name: customerName } : {}), ...(digits ? { contact: `+${digits}` } : {}) } }
+      : {}),
+    notify: { sms: false, email: false },
+    reminder_enable: false,
+    expire_by: Math.floor(Date.now() / 1000) + 24 * 60 * 60,
+    notes,
+  }); // { id: 'plink_...', short_url, status, ... }
+}
+
+async function fetchPaymentLink(linkId) {
+  return getClient().paymentLink.fetch(linkId);
+}
+
 async function fetchPayment(paymentId) {
   return getClient().payments.fetch(paymentId);
 }
@@ -66,6 +95,8 @@ function verifyWebhookSignature(rawBody, signatureHeader) {
 module.exports = {
   getClient,
   createOrder,
+  createPaymentLink,
+  fetchPaymentLink,
   fetchPayment,
   verifyCheckoutSignature,
   verifyWebhookSignature,

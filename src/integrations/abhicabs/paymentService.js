@@ -125,4 +125,124 @@ async function countPaymentAttemptsForBooking(bookingId) {
   return prisma.payment.count({ where: { bookingId } });
 }
 
-module.exports = { createPaymentOrder, verifyAndCapturePayment, getPaymentStatus, countPaymentAttemptsForBooking };
+/**
+ * createPaymentLink — creates a Razorpay Payment Link for a booking and records
+ * it as a Payment row. For link payments the Payment row's `razorpayOrderId`
+ * column holds the link id (plink_...), which is what the webhook looks up.
+ * Idempotent on idempotencyKey: retrying returns the same link, never a second one.
+ *
+ * mode: 'PARTIAL' | 'FULL' (stored on the booking so the receipt can say which).
+ */
+async function createPaymentLink({ bookingId, amountInRupees, mode, attempt = 1, idempotencyKey, customerName }) {
+  const prisma = getPrisma();
+
+  const existing = await prisma.payment.findUnique({ where: { idempotencyKey } });
+  if (existing) {
+    const link = await razorpayClient.fetchPaymentLink(existing.razorpayOrderId);
+    return { payment: withId(existing), paymentUrl: link.short_url };
+  }
+
+  const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+  if (!booking) throw new Error('BOOKING_NOT_FOUND');
+
+  const link = await razorpayClient.createPaymentLink({
+    amountInRupees,
+    referenceId: `${booking.bookingNumber}-${attempt}`,
+    description: `ABHI CABS booking ${booking.bookingNumber}`,
+    customerName: customerName || booking.passenger?.name,
+    customerPhone: booking.passenger?.phone,
+    notes: { bookingId: String(bookingId), bookingNumber: booking.bookingNumber, mode },
+  });
+
+  const payment = await prisma.payment.create({
+    data: {
+      bookingId,
+      razorpayOrderId: link.id,
+      amount: Math.round(amountInRupees * 100),
+      currency: 'INR',
+      status: 'CREATED',
+      attempt,
+      idempotencyKey,
+    },
+  });
+
+  await prisma.booking.update({
+    where: { id: bookingId },
+    data: {
+      paymentId: payment.id,
+      status: 'PAYMENT_PENDING',
+      fare: { ...booking.fare, paymentMode: mode, amountPaid: 0, amountDue: booking.fare.total },
+    },
+  });
+
+  return { payment: withId(payment), paymentUrl: link.short_url };
+}
+
+/** "Pay Later": nothing is charged now, the booking is confirmed and the full fare stays due. */
+async function markBookingPayLater(bookingId) {
+  const prisma = getPrisma();
+  const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+  if (!booking) throw new Error('BOOKING_NOT_FOUND');
+  const updated = await prisma.booking.update({
+    where: { id: bookingId },
+    data: {
+      status: 'CONFIRMED',
+      fare: { ...booking.fare, paymentMode: 'PAY_LATER', amountPaid: 0, amountDue: booking.fare.total },
+    },
+  });
+  return withId(updated);
+}
+
+/**
+ * applyPaymentCaptured — called ONLY after the Razorpay webhook signature has been
+ * verified. Atomically flips the payment to CAPTURED (so a webhook that Razorpay
+ * delivers twice only confirms the booking once) and confirms the booking.
+ * Returns { alreadyCaptured: true } for the duplicate delivery.
+ */
+async function applyPaymentCaptured({ paymentId, razorpayPaymentId, amountPaise }) {
+  const prisma = getPrisma();
+
+  const flipped = await prisma.payment.updateMany({
+    where: { id: paymentId, status: { not: 'CAPTURED' } },
+    data: { status: 'CAPTURED', razorpayPaymentId: razorpayPaymentId || null, verifiedAt: new Date() },
+  });
+  if (flipped.count === 0) return { alreadyCaptured: true };
+
+  const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
+  const paidRupees = Math.round((amountPaise ?? payment.amount) / 100);
+  if (amountPaise != null && amountPaise !== payment.amount) {
+    // eslint-disable-next-line no-console
+    console.warn(`[payment] amount mismatch for ${paymentId}: expected ${payment.amount} paise, Razorpay reported ${amountPaise}`);
+  }
+
+  let booking = payment.bookingId ? await prisma.booking.findUnique({ where: { id: payment.bookingId } }) : null;
+  if (booking) {
+    const total = booking.fare?.total || 0;
+    const previouslyPaid = booking.fare?.amountPaid || 0;
+    const amountPaid = previouslyPaid + paidRupees;
+    booking = await prisma.booking.update({
+      where: { id: booking.id },
+      data: {
+        status: 'CONFIRMED',
+        fare: {
+          ...booking.fare,
+          paymentMode: booking.fare?.paymentMode || (amountPaid >= total ? 'FULL' : 'PARTIAL'),
+          amountPaid,
+          amountDue: Math.max(0, total - amountPaid),
+        },
+      },
+    });
+  }
+
+  return { alreadyCaptured: false, payment: withId(payment), booking: withId(booking), paidRupees };
+}
+
+module.exports = {
+  createPaymentOrder,
+  verifyAndCapturePayment,
+  getPaymentStatus,
+  countPaymentAttemptsForBooking,
+  createPaymentLink,
+  markBookingPayLater,
+  applyPaymentCaptured,
+};

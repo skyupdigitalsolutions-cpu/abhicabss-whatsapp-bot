@@ -19,18 +19,11 @@ async function routeFromIntent(ctx) {
       await renderMainMenu(ctx);
       return;
     }
-    case INTENTS.BOOK_CAB: {
-      const { promptTripType } = require('./booking.handler');
-      session.resetDraft();
-      await transition(session, STATES.BOOKING_TRIP_TYPE);
-      await promptTripType(ctx);
-      return;
-    }
+    case INTENTS.BOOK_CAB:
     case INTENTS.FARE_ENQUIRY: {
-      const { promptTripType } = require('./booking.handler');
-      session.resetDraft();
-      await transition(session, STATES.BOOKING_TRIP_TYPE);
-      await promptTripType({ ...ctx, fareOnly: true });
+      // Fares are shown in the Cab Type step, so a fare question simply starts a booking.
+      const { startBooking } = require('./booking.handler');
+      await startBooking(ctx);
       return;
     }
     case INTENTS.MY_BOOKINGS: {
@@ -60,9 +53,8 @@ async function routeFromIntent(ctx) {
       return;
     }
     case INTENTS.SUPPORT_REQUEST: {
-      const { promptSupportCategory } = require('./support.handler');
-      await transition(session, STATES.SUPPORT_CATEGORY);
-      await promptSupportCategory(ctx);
+      const { showHelp } = require('./mainMenu.handler');
+      await showHelp(ctx);
       return;
     }
     case INTENTS.HUMAN_REQUEST: {
@@ -72,7 +64,14 @@ async function routeFromIntent(ctx) {
     }
     default: {
       const { renderMainMenu } = require('./mainMenu.handler');
-      await ctx.send.text('generic_error');
+      if (/^(menu|main menu|home)$/i.test(text.trim())) {
+        // "menu" works from any step: drop the half-finished booking and show the services.
+        session.resetDraft();
+        await transition(session, STATES.MAIN_MENU);
+        await renderMainMenu(ctx);
+        return;
+      }
+      await ctx.send.text('didnt_understand');
       await renderMainMenu(ctx);
     }
   }

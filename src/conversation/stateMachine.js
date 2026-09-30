@@ -4,7 +4,6 @@ const { makeSender } = require('./outbound');
 const { t } = require('../utils/i18n');
 const { logger } = require('../config/logger');
 
-const { promptLanguageSelection, handleLanguageSelection } = require('./handlers/language.handler');
 const { renderMainMenu, handleMainMenu } = require('./handlers/mainMenu.handler');
 const {
   handleBookingTripType,
@@ -23,7 +22,7 @@ const {
   handleBookingCustomerName,
   handleBookingReview,
 } = require('./handlers/bookingReview.handler');
-const { handlePaymentPendingReply } = require('./handlers/payment.handler');
+const { handlePaymentPendingReply, handlePaymentOption } = require('./handlers/payment.handler');
 const { showMyBookings, handleBookingDetailsSelection } = require('./handlers/myBookings.handler');
 const {
   handleCancellationReason,
@@ -51,6 +50,7 @@ const NUMBERED_MENU_STATES = new Set([
   STATES.BOOKING_VEHICLE_SELECTION,
   STATES.BOOKING_FARE_CONFIRMATION,
   STATES.BOOKING_REVIEW,
+  STATES.BOOKING_CREATED,
   STATES.MY_BOOKINGS,
   STATES.BOOKING_DETAILS,
   STATES.PAYMENT_PENDING,
@@ -68,7 +68,6 @@ const NUMBERED_MENU_STATES = new Set([
  * logic — it only dispatches by `session.state`.
  */
 const STATE_HANDLERS = {
-  [STATES.LANGUAGE_SELECTION]: handleLanguageSelection,
   [STATES.MAIN_MENU]: handleMainMenu,
 
   [STATES.BOOKING_TRIP_TYPE]: handleBookingTripType,
@@ -85,6 +84,7 @@ const STATE_HANDLERS = {
   [STATES.BOOKING_CUSTOMER_NAME]: handleBookingCustomerName,
   [STATES.BOOKING_REVIEW]: handleBookingReview,
 
+  [STATES.BOOKING_CREATED]: handlePaymentOption, // booking saved, customer is choosing Pay Later / Partial / Full
   [STATES.PAYMENT_PENDING]: handlePaymentPendingReply,
 
   [STATES.MY_BOOKINGS]: showMyBookings,
@@ -160,6 +160,17 @@ async function processInboundMessage(whatsappNumber, normalizedMessage) {
     }
   }
 
+  // The language question was removed from the flow. A customer who was still sitting on
+  // it (an older session) is simply taken to the main menu in English.
+  if (session.state === STATES.LANGUAGE_SELECTION) {
+    const { transition } = require('./sessionManager');
+    session.language = session.language || 'en';
+    await transition(session, STATES.MAIN_MENU);
+    await renderMainMenu({ ...ctx, language: session.language });
+    await touchSession(session);
+    return;
+  }
+
   if (wasExpired && session.state === STATES.SESSION_EXPIRED) {
     const { rows, map } = toNumbered([
       { id: 'RESUME_CONTINUE', number: 1, label: t(language, 'continue_previous') },
@@ -190,23 +201,15 @@ async function processInboundMessage(whatsappNumber, normalizedMessage) {
   const greetingText = (normalizedMessage.text || '').trim();
   const isGreeting = GREETING_KEYWORDS.test(greetingText) && !normalizedMessage.interactiveId;
   const inHandoff = session.humanHandoff || session.state === STATES.HUMAN_HANDOFF;
-  if (
-    isGreeting &&
-    session.state !== STATES.LANGUAGE_SELECTION &&
-    (!inHandoff || GREETING_RESETS_HANDOFF)
-  ) {
+  if (isGreeting && (!inHandoff || GREETING_RESETS_HANDOFF)) {
     const { transition } = require('./sessionManager');
     session.resetDraft();
     session.humanHandoff = false;
     session.handoffReason = null;
+    session.language = session.language || 'en';
     await session.save();
-    if (session.language) {
-      await transition(session, STATES.MAIN_MENU);
-      await renderMainMenu(ctx);
-    } else {
-      await transition(session, STATES.LANGUAGE_SELECTION);
-      await promptLanguageSelection(ctx);
-    }
+    await transition(session, STATES.MAIN_MENU);
+    await renderMainMenu(ctx);
     await touchSession(session);
     return;
   }
@@ -219,10 +222,7 @@ async function processInboundMessage(whatsappNumber, normalizedMessage) {
 
   // Global interrupts: "menu" / "cancel" / "help" / "human" work from anywhere.
   const text = normalizedMessage.text || normalizedMessage.interactiveTitle || '';
-  if (
-    GLOBAL_INTERRUPT_KEYWORDS.test(text.trim()) &&
-    session.state !== STATES.LANGUAGE_SELECTION
-  ) {
+  if (GLOBAL_INTERRUPT_KEYWORDS.test(text.trim())) {
     await routeFromIntent(ctx);
     await touchSession(session);
     return;
@@ -232,9 +232,8 @@ async function processInboundMessage(whatsappNumber, normalizedMessage) {
   if (!handler) {
     logger.warn({ state: session.state }, '[stateMachine] no handler for state — resetting to main menu');
     const { transition } = require('./sessionManager');
-    await transition(session, session.language ? STATES.MAIN_MENU : STATES.LANGUAGE_SELECTION);
-    if (session.language) await renderMainMenu(ctx);
-    else await promptLanguageSelection(ctx);
+    await transition(session, STATES.MAIN_MENU);
+    await renderMainMenu(ctx);
     await touchSession(session);
     return;
   }

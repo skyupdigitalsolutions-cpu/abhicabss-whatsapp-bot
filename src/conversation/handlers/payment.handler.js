@@ -1,99 +1,253 @@
-const dayjs = require('dayjs');
 const { STATES } = require('../states');
 const { transition } = require('../sessionManager');
 const { t } = require('../../utils/i18n');
+const env = require('../../config/env');
 const { callTool } = require('../../integrations/ai/tools');
 const { paymentIdempotencyKey } = require('../../utils/idempotency');
-const { getPrisma } = require('../../config/db');
+const { logger } = require('../../config/logger');
 const { makeSender } = require('../outbound');
 const { toNumbered, rememberOptions } = require('../numberedMenu');
+const { fmtDate, fmtTime, fmtDateTime, inr } = require('../../utils/format');
 
-/**
- * Called by the Razorpay webhook controller (NOT by anything the
- * customer types) once a payment is verified as CAPTURED. This is the
- * only path that sends the "Booking Confirmed" message — the bot
- * itself never marks a booking confirmed from chat text.
- */
-async function notifyPaymentCaptured(session, booking) {
-  const send = makeSender(session.whatsappNumber, session.language);
-  await transition(session, STATES.BOOKING_CONFIRMED);
+/** Partial Payment = PARTIAL_PAYMENT_PERCENT of the fare (default 25%), at least ₹1, never more than the fare. */
+function partialAmount(total) {
+  return Math.min(total, Math.max(1, Math.round((total * env.PARTIAL_PAYMENT_PERCENT) / 100)));
+}
 
-  const body =
-    `${t(session.language, 'thank_you_booking')}\n` +
-    `${t(session.language, 'congratulations')}\n\n` +
-    `${t(session.language, 'payment_success')}\n\n` +
-    `${t(session.language, 'booking_confirmed_title')}\n\n` +
-    `Booking ID: ${booking.bookingNumber}\n\n` +
-    `📍 ${booking.pickup.address}${booking.drop?.address ? ' → ' + booking.drop.address : ''}\n` +
-    `📅 ${dayjs(booking.pickupAt).format('DD MMM YYYY')}\n` +
-    `⏰ ${dayjs(booking.pickupAt).format('h:mm A')}\n` +
-    `🚗 ${booking.vehicle.name}\n` +
-    `💰 Paid: ₹${booking.fare.total}\n\n` +
-    `Driver details will be shared once assigned.`;
+function bookingDetailsText(booking) {
+  const b = booking;
+  const passengers = b.passenger?.passengerCount;
+  return (
+    `Booking ID: *${b.bookingNumber}*\n\n` +
+    `👤 ${b.passenger?.name || ''}${passengers ? ` · ${passengers} passenger${passengers > 1 ? 's' : ''}` : ''}\n` +
+    `📍 Pickup: ${b.pickup?.address}\n` +
+    (b.drop?.address ? `🏁 Drop: ${b.drop.address}\n` : '') +
+    `📅 ${fmtDate(b.pickupAt)}\n` +
+    `⏰ ${fmtTime(b.pickupAt)}\n` +
+    (b.returnAt ? `↩️ Return: ${fmtDateTime(b.returnAt)}\n` : '') +
+    `🚗 ${b.vehicle?.name}\n\n` +
+    `💰 Total fare: ${inr(b.fare?.total)}`
+  );
+}
 
-  await send.raw(body);
-  await send.buttonsRaw(t(session.language, 'menu_my_booking'), [
-    { id: 'MENU_MY_BOOKING', title: t(session.language, 'menu_my_booking') },
-    { id: 'MENU_TRACK_BOOKING', title: t(session.language, 'menu_track_booking') },
-    { id: 'MENU_SUPPORT', title: t(session.language, 'menu_support') },
+async function finishAndReturnToMenu(session, send, language) {
+  session.resetDraft();
+  session.pendingOptionsMap = {};
+  await transition(session, STATES.MAIN_MENU);
+  await send.buttonsRaw(t(language, 'reply_menu_hint'), [
+    { id: 'MENU_MY_BOOKING', title: t(language, 'menu_my_booking') },
+    { id: 'MENU_CONTACT', title: t(language, 'menu_contact') },
   ]);
 }
 
-/** Called by the Razorpay webhook controller when a payment fails/times out. */
+/**
+ * Called by the Razorpay webhook controller (NOT by anything the customer types)
+ * once a payment is verified as paid. This is the only path that confirms a booking
+ * after an online payment. Sends: booking details + payment receipt.
+ */
+async function notifyPaymentCaptured(session, booking, payment, paidRupees) {
+  const language = session.language || 'en';
+  const send = makeSender(session.whatsappNumber, language);
+
+  const total = booking.fare?.total || 0;
+  const paid = paidRupees ?? booking.fare?.amountPaid ?? 0;
+  const due = Math.max(0, total - (booking.fare?.amountPaid ?? paid));
+  const fullyPaid = due === 0;
+
+  const receipt =
+    `🧾 *Payment Receipt*\n` +
+    `Receipt No: RCPT-${booking.bookingNumber}-${payment?.attempt || 1}\n` +
+    `Date: ${fmtDateTime(new Date())}\n` +
+    `Amount paid: ${inr(paid)} (${fullyPaid ? 'Full payment' : 'Partial payment'})\n` +
+    (fullyPaid ? `Status: Fully paid ✅\n` : `Balance due: ${inr(due)}\n`) +
+    (payment?.razorpayPaymentId ? `Payment ID: ${payment.razorpayPaymentId}` : '');
+
+  await send.raw(
+    `${t(language, 'payment_success')}\n\n` +
+      `${t(language, 'booking_confirmed_title')}\n` +
+      `${bookingDetailsText(booking)}\n\n` +
+      `${receipt.trim()}\n\n` +
+      `${t(language, 'thank_you_booking')}\n` +
+      `${t(language, 'driver_details_later')}`
+  );
+
+  session.activePaymentId = payment?._id || session.activePaymentId;
+  await finishAndReturnToMenu(session, send, language);
+}
+
+/** "Pay Later" chosen: booking is confirmed, nothing charged, full fare stays due. */
+async function notifyBookingConfirmedPayLater(session, booking) {
+  const language = session.language || 'en';
+  const send = makeSender(session.whatsappNumber, language);
+
+  await send.raw(
+    `${t(language, 'congratulations')}\n\n` +
+      `${t(language, 'booking_confirmed_title')}\n` +
+      `${bookingDetailsText(booking)}\n\n` +
+      `${t(language, 'booking_confirmed_paylater', { due: inr(booking.fare?.total) })}\n\n` +
+      `${t(language, 'thank_you_booking')}\n` +
+      `${t(language, 'driver_details_later')}`
+  );
+
+  await finishAndReturnToMenu(session, send, language);
+}
+
+/** Called by the Razorpay webhook when a payment link expires or is cancelled. */
 async function notifyPaymentFailed(session, booking) {
-  const send = makeSender(session.whatsappNumber, session.language);
-  await send.text('payment_failed');
+  const language = session.language || 'en';
+  const send = makeSender(session.whatsappNumber, language);
+  await send.text('payment_link_expired');
 
   const buttons = [
-    { id: 'PAYMENT_RETRY', number: 1, label: t(session.language, 'retry_payment'), maxTitleLength: 20 },
-    { id: 'PAYMENT_CHANGE_METHOD', number: 2, label: t(session.language, 'change_payment_method'), maxTitleLength: 20 },
-    { id: 'PAYMENT_SUPPORT', number: 3, label: t(session.language, 'contact_support'), maxTitleLength: 20 },
+    { id: 'PAYMENT_RETRY', number: 1, label: t(language, 'retry_payment'), maxTitleLength: 20 },
+    { id: 'PAYMENT_CHANGE_METHOD', number: 2, label: t(language, 'change_payment_method'), maxTitleLength: 20 },
+    { id: 'PAYMENT_SUPPORT', number: 3, label: t(language, 'contact_support'), maxTitleLength: 20 },
   ];
   const { rows, map } = toNumbered(buttons);
-  await send.buttonsRaw(t(session.language, 'payment_failed'), rows.map((r) => ({ id: r.id, title: r.title })));
+  await send.buttonsRaw(t(language, 'payment_failed'), rows.map((r) => ({ id: r.id, title: r.title })));
+
+  await transition(session, STATES.PAYMENT_PENDING);
   await rememberOptions(session, map);
+}
+
+// ── Select Payment Option ───────────────────────────────────────────
+
+async function showPaymentOptions(ctx, booking) {
+  const { session, language } = ctx;
+
+  if (booking.status === 'CONFIRMED') {
+    // Double tap on Confirm after it was already paid/confirmed: show the booking, don't start over.
+    await notifyBookingConfirmedPayLater(session, booking);
+    return;
+  }
+
+  const total = booking.fare.total;
+  await transition(session, STATES.BOOKING_CREATED);
+
+  const body = t(language, 'payment_options_body', {
+    bookingNumber: booking.bookingNumber,
+    total: inr(total),
+    partial: inr(partialAmount(total)),
+    percent: env.PARTIAL_PAYMENT_PERCENT,
+    zero: inr(0),
+  });
+  const buttons = [
+    { id: 'PAY_LATER', number: 1, label: t(language, 'btn_pay_later'), maxTitleLength: 20 },
+    { id: 'PAY_PARTIAL', number: 2, label: t(language, 'btn_pay_partial'), maxTitleLength: 20 },
+    { id: 'PAY_FULL', number: 3, label: t(language, 'btn_pay_full'), maxTitleLength: 20 },
+  ];
+  const { rows, map } = toNumbered(buttons);
+
+  await ctx.send.buttonsRaw(body, rows.map((r) => ({ id: r.id, title: r.title })));
+  await rememberOptions(session, map);
+}
+
+async function handlePaymentOption(ctx) {
+  const { message, session } = ctx;
+  const typed = (message.text || '').trim();
+
+  let choice = ['PAY_LATER', 'PAY_PARTIAL', 'PAY_FULL'].includes(message.interactiveId) ? message.interactiveId : null;
+  if (!choice) {
+    if (/later/i.test(typed)) choice = 'PAY_LATER';
+    else if (/partial/i.test(typed)) choice = 'PAY_PARTIAL';
+    else if (/full/i.test(typed)) choice = 'PAY_FULL';
+  }
+
+  const booking = await callTool('getBooking', session.activeBookingId);
+  if (!booking) {
+    await ctx.send.text('booking_api_failed');
+    return;
+  }
+
+  if (!choice) {
+    await showPaymentOptions(ctx, booking);
+    return;
+  }
+
+  if (choice === 'PAY_LATER') {
+    let confirmed;
+    try {
+      confirmed = await callTool('markBookingPayLater', booking._id);
+    } catch (err) {
+      logger.error({ err: err.message }, '[payment] pay-later confirmation failed');
+      await ctx.send.text('booking_api_failed');
+      return;
+    }
+    await notifyBookingConfirmedPayLater(session, confirmed);
+    return;
+  }
+
+  await sendPaymentLink(ctx, booking, choice === 'PAY_PARTIAL' ? 'PARTIAL' : 'FULL');
+}
+
+// ── Razorpay payment link ───────────────────────────────────────────
+
+async function sendPaymentLink(ctx, booking, mode) {
+  const { session } = ctx;
+  const total = booking.fare.total;
+  const amount = mode === 'FULL' ? total : partialAmount(total);
+
+  const attempt = (await callTool('countPaymentAttemptsForBooking', booking._id)) + 1;
+  const idempotencyKey = paymentIdempotencyKey(booking._id, attempt);
+
+  let result;
+  try {
+    result = await callTool('createPaymentLink', {
+      bookingId: booking._id,
+      amountInRupees: amount,
+      mode,
+      attempt,
+      idempotencyKey,
+      customerName: booking.passenger?.name,
+    });
+  } catch (err) {
+    logger.error({ err: err.message }, '[payment] createPaymentLink failed');
+    await ctx.send.text('payment_link_failed');
+    await showPaymentOptions(ctx, booking);
+    return;
+  }
+
+  session.activePaymentId = result.payment._id;
+  session.pendingOptionsMap = {};
+  await transition(session, STATES.PAYMENT_PENDING);
+
+  await ctx.send.text('payment_link_message', {
+    amount: inr(amount),
+    bookingNumber: booking.bookingNumber,
+    url: result.paymentUrl,
+  });
 }
 
 async function handlePaymentPendingReply(ctx) {
   const { message, session } = ctx;
+  const id = message.interactiveId;
+  const typed = (message.text || '').trim().toLowerCase();
 
-  if (message.interactiveId === 'PAYMENT_RETRY' || message.interactiveId === 'PAYMENT_CHANGE_METHOD') {
-    const booking = await callTool('getBooking', session.activeBookingId);
-    if (!booking) {
-      await ctx.send.text('booking_api_failed');
-      return;
-    }
-    const { startPayment } = require('./bookingReview.handler');
-    // Bump attempt count so the idempotency key differs from the failed one.
-    const attempt = (await callTool('countPaymentAttemptsForBooking', booking._id)) + 1;
-    await startPaymentWithAttempt(ctx, booking, attempt);
-    return;
-  }
-
-  if (message.interactiveId === 'PAYMENT_SUPPORT') {
+  if (id === 'PAYMENT_SUPPORT') {
     const { escalateToHuman } = require('./handoff.handler');
     await escalateToHuman(ctx, 'PAYMENT_ISSUE', { category: 'PAYMENT_ISSUE', bookingId: session.activeBookingId });
     return;
   }
 
-  // Anything else while payment is pending — remind them verification is manual/backend-driven.
-  await ctx.send.text('payment_verifying');
-}
+  const wantsRetry = id === 'PAYMENT_RETRY' || /^(retry|new link|resend|link)$/.test(typed);
+  const wantsOptions = id === 'PAYMENT_CHANGE_METHOD' || /^(change|options?)$/.test(typed);
 
-async function startPaymentWithAttempt(ctx, booking, attempt) {
-  const { session } = ctx;
-  const idemKey = paymentIdempotencyKey(booking._id, attempt);
-  const order = await callTool('createPaymentOrder', {
-    bookingId: booking._id,
-    amountInRupees: booking.fare.total,
-    idempotencyKey: idemKey,
-    attempt,
-  });
-  session.activePaymentId = order._id;
-  session.pendingOptionsMap = {};
-  await session.save();
-  await ctx.send.text('amount_payable', { amount: booking.fare.total });
-  await ctx.send.raw(`${t(ctx.language, 'please_pay')}\n\nOrder ID: ${order.razorpayOrderId}`);
+  if (wantsRetry || wantsOptions) {
+    const booking = await callTool('getBooking', session.activeBookingId);
+    if (!booking) {
+      await ctx.send.text('booking_api_failed');
+      return;
+    }
+    if (wantsOptions) {
+      await showPaymentOptions(ctx, booking);
+    } else {
+      await sendPaymentLink(ctx, booking, booking.fare?.paymentMode === 'FULL' ? 'FULL' : 'PARTIAL');
+    }
+    return;
+  }
+
+  // Anything else while payment is pending — verification only ever comes from Razorpay.
+  await ctx.send.text('payment_verifying');
 }
 
 async function handlePaymentStatusQuery(ctx) {
@@ -115,7 +269,12 @@ async function handlePaymentStatusQuery(ctx) {
 }
 
 module.exports = {
+  partialAmount,
+  showPaymentOptions,
+  handlePaymentOption,
+  sendPaymentLink,
   notifyPaymentCaptured,
+  notifyBookingConfirmedPayLater,
   notifyPaymentFailed,
   handlePaymentPendingReply,
   handlePaymentStatusQuery,

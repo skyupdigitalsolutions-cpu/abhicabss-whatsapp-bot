@@ -43,8 +43,9 @@ async function getOrCreateSession(whatsappNumber) {
       data: {
         whatsappNumber,
         customerId: customer.id,
-        language: null,
-        state: STATES.LANGUAGE_SELECTION,
+        // No language question: customers start in English on the main menu.
+        language: 'en',
+        state: STATES.MAIN_MENU,
       },
     });
     return { session: wrapSession(row), customer, resumed: false, wasExpired: false };

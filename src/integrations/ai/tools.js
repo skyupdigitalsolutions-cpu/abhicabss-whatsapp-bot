@@ -30,6 +30,8 @@ const tools = {
   createPaymentOrder: paymentService.createPaymentOrder,
   getPaymentStatus: paymentService.getPaymentStatus,
   countPaymentAttemptsForBooking: paymentService.countPaymentAttemptsForBooking,
+  createPaymentLink: paymentService.createPaymentLink,
+  markBookingPayLater: paymentService.markBookingPayLater,
 
   getAvailableActions: cancellationService.getAvailableActions,
   getCancellationQuote: cancellationService.getCancellationQuote,

@@ -7,6 +7,7 @@ const locationParser = require('../nlu/locationParser');
 const { callTool } = require('../../integrations/ai/tools');
 const { logger } = require('../../config/logger');
 const { toNumbered, rememberOptions } = require('../numberedMenu');
+const { inr } = require('../../utils/format');
 
 const TRIP_TYPES = [
   { id: 'TRIP_ONE_WAY', value: 'ONE_WAY', key: 'trip_one_way', number: 1 },
@@ -27,6 +28,19 @@ function tOr(language, key, fallback) {
   } catch (e) {
     return fallback;
   }
+}
+
+/**
+ * "Book a Cab": a new one-way booking that starts straight at the pickup question.
+ * (The trip-type question was removed from the flow.)
+ */
+async function startBooking(ctx) {
+  const { session } = ctx;
+  session.resetDraft();
+  session.draft.tripType = 'ONE_WAY';
+  await session.save();
+  await transition(session, STATES.BOOKING_PICKUP);
+  await ctx.send.text('ask_pickup');
 }
 
 // ── STEP 1: Trip type ──────────────────────────────────────────────
@@ -232,7 +246,7 @@ async function handleBookingTime(ctx) {
     return;
   }
 
-  await proceedToPassengers(ctx);
+  await showVehicleOptions(ctx);
 }
 
 // ── STEP 5b: Round trip return date/time ────────────────────────────
@@ -286,7 +300,7 @@ async function handleBookingReturnTime(ctx) {
 
   session.draft.returnAt = combined.toDate();
   await session.save();
-  await proceedToPassengers(ctx);
+  await showVehicleOptions(ctx);
 }
 
 // ── STEP 5c: Hourly rental package ──────────────────────────────────
@@ -300,32 +314,23 @@ async function handleBookingRentalHours(ctx) {
   }
   session.draft.rentalHours = parseInt(hoursMatch[0], 10);
   await session.save();
-  await proceedToPassengers(ctx);
-}
-
-// ── STEP 6: Passenger count ─────────────────────────────────────────
-
-async function proceedToPassengers(ctx) {
-  const { session } = ctx;
-  await transition(session, STATES.BOOKING_PASSENGERS);
-  await ctx.send.text('ask_passenger_count');
-}
-
-async function handleBookingPassengers(ctx) {
-  const { message, session } = ctx;
-  const countMatch = (message.text || message.interactiveTitle || '').match(/\d+/);
-  if (!countMatch) {
-    await ctx.send.text('ask_passenger_count');
-    return;
-  }
-  session.draft.passengerCount = parseInt(countMatch[0], 10);
-  await session.save();
   await showVehicleOptions(ctx);
 }
 
-// ── STEP 7: Vehicle options (backend fare API — never invented) ────
+// ── STEP 6: Cab type (fares come from the fare engine — never invented) ────
 
-async function showVehicleOptions(ctx) {
+const MAX_LIST_ROWS = 10; // WhatsApp allows at most 10 rows in one list
+const CATEGORY_ORDER = ['SEDAN', 'SUV', 'PREMIUM', 'LUXURY', 'TEMPO_TRAVELLER', 'BUS'];
+
+const titleCase = (s) =>
+  String(s).toLowerCase().split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+
+/**
+ * Fetches priced cab options for this trip and shows them.
+ * minSeats: only offer cabs that seat at least this many (used when the passenger
+ * count turned out to be more than the chosen cab holds).
+ */
+async function showVehicleOptions(ctx, { minSeats = 0 } = {}) {
   const { session } = ctx;
   await ctx.send.text('checking_vehicles');
 
@@ -345,19 +350,18 @@ async function showVehicleOptions(ctx) {
     return;
   }
 
-  if (!options || options.length === 0) {
+  options = (options || []).filter((o) => o.seatingCapacity >= minSeats);
+
+  if (options.length === 0) {
     await ctx.send.text('no_vehicles_available');
     const { escalateToHuman } = require('./handoff.handler');
     await escalateToHuman(ctx, 'NO_VEHICLES_AVAILABLE', { category: 'BOOKING_ISSUE' });
     return;
   }
 
-  session._cachedOptions = options; // not persisted — see BOOKING_VEHICLE_SELECTION handler note
-  session.markModified('draft');
-  await session.save();
+  options.sort((a, b) => a.fare.total - b.fare.total);
 
-  // Persist minimal option data on the session doc so selection survives
-  // a process restart (in-memory _cachedOptions would not).
+  // Persist minimal option data on the session so the selection survives a restart.
   session.draft._vehicleOptions = options.map((o) => ({
     vehicleId: o.vehicleId,
     vehicleName: o.vehicleName,
@@ -367,42 +371,146 @@ async function showVehicleOptions(ctx) {
     fareQuoteId: o.fareQuoteId,
     fare: o.fare,
   }));
-  await session.save();
+  session.draft._vehicleCategory = null;
+  session.draft.vehicleId = null;
+  session.markModified('draft');
 
-  const rows = options.map((o, i) => ({
+  await transition(session, STATES.BOOKING_VEHICLE_SELECTION);
+  await sendVehicleChoices(ctx);
+}
+
+/**
+ * Shows either the cab list, or — when there are more than 10 cabs, which WhatsApp
+ * cannot fit in one list — a short "Cab Type" list (Sedan, SUV, Tempo Traveller...)
+ * followed by the cabs of the chosen type.
+ */
+async function sendVehicleChoices(ctx) {
+  const { session, language } = ctx;
+  const all = session.draft._vehicleOptions || [];
+  const category = session.draft._vehicleCategory;
+
+  if (!category && all.length > MAX_LIST_ROWS) {
+    const groups = new Map();
+    for (const o of all) {
+      if (!groups.has(o.category)) groups.set(o.category, []);
+      groups.get(o.category).push(o);
+    }
+    const rank = (c) => (CATEGORY_ORDER.indexOf(c) === -1 ? 99 : CATEGORY_ORDER.indexOf(c));
+    const categories = [...groups.keys()].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_LIST_ROWS);
+
+    const rows = categories.map((c, i) => {
+      const g = groups.get(c);
+      const from = Math.min(...g.map((o) => o.fare.total));
+      return {
+        id: `CAT_${c}`,
+        number: i + 1,
+        label: tOr(language, `cab_category_${c}`, titleCase(c)),
+        description: `${g.length} option${g.length > 1 ? 's' : ''} · from ${inr(from)}`,
+      };
+    });
+    const { rows: numbered, map } = toNumbered(rows);
+    await ctx.send.listRaw(
+      t(language, 'ask_cab_type'),
+      tOr(language, 'btn_select_cab_type', 'Select Cab Type'),
+      [{ title: 'Cab types', rows: numbered }]
+    );
+    await rememberOptions(session, map);
+    return;
+  }
+
+  const pool = (category ? all.filter((o) => o.category === category) : all).slice(0, MAX_LIST_ROWS);
+  const rows = pool.map((o, i) => ({
     id: `VEHICLE_${o.vehicleId}`,
     number: i + 1,
     label: `${o.vehicleName}`.slice(0, 22),
-    description: `${o.seatingCapacity} seats · ₹${o.fare.total}`,
+    // The row title is cut off at 24 characters by WhatsApp, so the full name goes here too.
+    description: `${o.vehicleName} · ${o.seatingCapacity} seats · ${inr(o.fare.total)}`,
   }));
-  const { rows: numberedRows, map } = toNumbered(rows);
-
-  await transition(session, STATES.BOOKING_VEHICLE_SELECTION);
+  const { rows: numbered, map } = toNumbered(rows);
   await ctx.send.listRaw(
-    t(ctx.language, 'select_vehicle'),
-    tOr(ctx.language, 'btn_select_vehicle', 'Select Vehicle'),
-    [{ title: 'Vehicles', rows: numberedRows }]
+    t(language, 'select_vehicle'),
+    tOr(language, 'btn_select_vehicle', 'Select Vehicle'),
+    [{ title: 'Vehicles', rows: numbered }]
   );
   await rememberOptions(session, map);
 }
 
-async function handleBookingVehicleSelection(ctx) {
-  const { message, session } = ctx;
-  const vehicleId = (message.interactiveId || '').replace(/^VEHICLE_/, '');
-  const option = (session.draft._vehicleOptions || []).find((o) => o.vehicleId === vehicleId);
-
-  if (!option) {
-    await ctx.send.text('select_vehicle');
-    return;
-  }
-
+async function chooseVehicle(ctx, option) {
+  const { session } = ctx;
   session.draft.vehicleId = option.vehicleId;
+  session.draft.vehicleName = option.vehicleName;
   session.draft.vehicleClass = option.category;
   session.draft.fareQuoteId = option.fareQuoteId;
   session.draft.fare = option.fare;
+  session.markModified('draft');
   await session.save();
 
-  await showFareConfirmation(ctx, option);
+  // Came back here because the group was bigger than the cab? Details are already known.
+  if (session.draft.passengerName && session.draft.passengerCount) {
+    const { showBookingReview } = require('./bookingReview.handler');
+    await showBookingReview(ctx);
+    return;
+  }
+
+  await transition(session, STATES.BOOKING_CUSTOMER_NAME);
+  await ctx.send.text('ask_name');
+}
+
+async function handleBookingVehicleSelection(ctx) {
+  const { message, session } = ctx;
+  const id = message.interactiveId || '';
+  const all = session.draft._vehicleOptions || [];
+
+  // Tapped a cab type (Sedan / SUV / ...)
+  if (id.startsWith('CAT_')) {
+    const category = id.slice(4);
+    const inCategory = all.filter((o) => o.category === category);
+    if (inCategory.length === 1) {
+      await chooseVehicle(ctx, inCategory[0]); // only one cab of this type: no need to ask again
+      return;
+    }
+    if (inCategory.length > 1) {
+      session.draft._vehicleCategory = category;
+      session.markModified('draft');
+      await session.save();
+      await sendVehicleChoices(ctx);
+      return;
+    }
+  }
+
+  const vehicleId = id.replace(/^VEHICLE_/, '');
+  const option = all.find((o) => o.vehicleId === vehicleId);
+  if (!option) {
+    await sendVehicleChoices(ctx);
+    return;
+  }
+
+  await chooseVehicle(ctx, option);
+}
+
+// ── STEP 7: Passenger details (name is asked in bookingReview.handler, then the count here) ──
+
+async function handleBookingPassengers(ctx) {
+  const { message, session } = ctx;
+  const countMatch = (message.text || message.interactiveTitle || '').match(/\d+/);
+  const count = countMatch ? parseInt(countMatch[0], 10) : 0;
+  if (!count || count > 60) {
+    await ctx.send.text('ask_passenger_count');
+    return;
+  }
+
+  session.draft.passengerCount = count;
+  await session.save();
+
+  const chosen = (session.draft._vehicleOptions || []).find((o) => o.vehicleId === session.draft.vehicleId);
+  if (chosen && count > chosen.seatingCapacity) {
+    await ctx.send.text('passenger_exceeds', { cab: chosen.vehicleName, seats: chosen.seatingCapacity });
+    await showVehicleOptions(ctx, { minSeats: count });
+    return;
+  }
+
+  const { showBookingReview } = require('./bookingReview.handler');
+  await showBookingReview(ctx);
 }
 
 async function showFareConfirmation(ctx, option) {
@@ -463,8 +571,10 @@ async function handleBookingFareConfirmation(ctx) {
 }
 
 module.exports = {
+  startBooking,
   promptTripType,
   promptDate,
+  showVehicleOptions,
   handleBookingTripType,
   handleBookingPickup,
   handleBookingDrop,
