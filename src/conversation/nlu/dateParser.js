@@ -224,31 +224,55 @@ function formatForConfirmation(instant, locale = 'en') {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Builds the WhatsApp interactive LIST message shown instead of asking the
- * customer to type a date. Dates are computed in India time, so "Today" is
- * correct even while the server (UTC) is still on the previous day.
- * Row ids look like DATE_2026-10-25; "Another date" is DATE_OTHER.
+ * Rows for the calendar list: 9 days starting at `from` (default today, India
+ * time) plus an "Another date" row. Ids look like DATE_2026-10-25 / DATE_OTHER.
+ * `labels` lets the caller pass translated text for Today / Tomorrow / Another date.
+ * Keeps within WhatsApp limits: 10 rows, title <= 24 chars, description <= 72 chars.
  */
-function buildDateListMessage(to, bodyText = 'Select your travel date') {
-  const start = now().startOf('day');
+function getDateListRows(opts = {}) {
+  const L = {
+    today: 'Today',
+    tomorrow: 'Tomorrow',
+    another: 'Another date',
+    anotherHint: 'Type it, e.g. 25 October',
+    ...(opts.labels || {}),
+  };
+  const base = now().startOf('day');
+  let start = opts.from ? dayjs(opts.from).tz(TZ).startOf('day') : base;
+  if (start.isBefore(base)) start = base;
+
   const rows = [];
   for (let i = 0; i < 9; i += 1) {
     const d = start.add(i, 'day');
+    const diff = d.diff(base, 'day');
+    const title = diff === 0 ? L.today : diff === 1 ? L.tomorrow : d.format('ddd, D MMM');
     rows.push({
       id: `DATE_${d.format('YYYY-MM-DD')}`,
-      title: (i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : d.format('ddd, D MMM')).slice(0, 24),
+      title: String(title).slice(0, 24),
       description: d.format('D MMMM YYYY').slice(0, 72),
     });
   }
-  rows.push({ id: 'DATE_OTHER', title: 'Another date', description: 'Type it, e.g. 25 October' });
+  rows.push({
+    id: 'DATE_OTHER',
+    title: String(L.another).slice(0, 24),
+    description: String(L.anotherHint).slice(0, 72),
+  });
+  return rows;
+}
 
+/**
+ * Builds a complete WhatsApp interactive LIST payload (for senders that take a
+ * raw payload). Dates are computed in India time, so "Today" is correct even
+ * while the server (UTC) is still on the previous day.
+ */
+function buildDateListMessage(to, bodyText = 'Select your travel date') {
   return {
     to,
     type: 'interactive',
     interactive: {
       type: 'list',
       body: { text: bodyText },
-      action: { button: 'Pick a date', sections: [{ title: 'Travel date', rows }] },
+      action: { button: 'Pick a date', sections: [{ title: 'Travel date', rows: getDateListRows() }] },
     },
   };
 }
@@ -267,6 +291,7 @@ module.exports = {
   combineDateTime,
   isPast,
   formatForConfirmation,
+  getDateListRows,
   buildDateListMessage,
   parseDateReply,
 };
