@@ -198,6 +198,7 @@ async function processInboundMessage(whatsappNumber, normalizedMessage) {
     const { transition } = require('./sessionManager');
     session.resetDraft();
     session.humanHandoff = false;
+    session.handoffReason = null;
     await session.save();
     if (session.language) {
       await transition(session, STATES.MAIN_MENU);
