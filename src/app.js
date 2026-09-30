@@ -18,7 +18,16 @@ app.set('trust proxy', 1);
 
 app.use(helmet());
 app.use(cors());
-app.use(pinoHttp({ logger }));
+app.use(
+  pinoHttp({
+    logger,
+    // Never write webhook secrets or signatures to the logs.
+    redact: {
+      paths: ['req.headers["x-webhook-secret"]', 'req.headers["x-razorpay-signature"]', 'req.headers.authorization'],
+      censor: '[hidden]',
+    },
+  })
+);
 
 // Capture the raw body for webhook signature verification (Meta + Razorpay)
 // while still parsing JSON normally for every other route.
