@@ -18,6 +18,17 @@ const SUPPORTED_LANGUAGES = [
   { code: 'ur', label: 'اردو' },
 ];
 
+/**
+ * Languages shown in the language menu: only those that actually have a
+ * translation file (en is always offered), capped at 10 because WhatsApp list
+ * messages allow at most 10 rows. Offering more than 10 made sendList() throw,
+ * so every brand-new customer was handed to support instead of seeing the menu.
+ * To offer another language, just add its locale file (e.g. locales/ta.json).
+ */
+const AVAILABLE_LANGUAGES = SUPPORTED_LANGUAGES
+  .filter((l) => l.code === 'en' || fs.existsSync(path.join(localesDir, `${l.code}.json`)))
+  .slice(0, 10);
+
 function loadLocale(code) {
   if (cache.has(code)) return cache.get(code);
   const filePath = path.join(localesDir, `${code}.json`);
@@ -46,4 +57,4 @@ function t(language, key, vars = {}) {
   return template;
 }
 
-module.exports = { t, SUPPORTED_LANGUAGES };
+module.exports = { t, SUPPORTED_LANGUAGES, AVAILABLE_LANGUAGES };
