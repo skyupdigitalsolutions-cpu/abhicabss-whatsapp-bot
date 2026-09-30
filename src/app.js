@@ -11,6 +11,11 @@ const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 
 const app = express();
 
+// Railway (and ngrok before it) sits in front of the app as a proxy.
+// Trust one proxy hop so the real client IP is used by express-rate-limit
+// instead of every customer looking like the same proxy address.
+app.set('trust proxy', 1);
+
 app.use(helmet());
 app.use(cors());
 app.use(pinoHttp({ logger }));
