@@ -40,6 +40,9 @@ const { resolveNumericSelection, toNumbered, rememberOptions } = require('./numb
  * Everywhere else a digit is treated as ordinary free text (a
  * passenger count, part of an address, a rental-hours answer, etc.)
  * so it's never misinterpreted as a stale menu selection.
+ *
+ * NOTE: BOOKING_DATE and BOOKING_RETURN_DATE are deliberately NOT here.
+ * The calendar list is not numbered, because a bare "27" is a valid date.
  */
 const NUMBERED_MENU_STATES = new Set([
   STATES.LANGUAGE_SELECTION,
@@ -96,6 +99,19 @@ const STATE_HANDLERS = {
 
 /** Intents that are always allowed to interrupt an in-progress flow (spec section 40). */
 const GLOBAL_INTERRUPT_KEYWORDS = /^(menu|cancel|help|support|human|agent)$/i;
+
+/**
+ * A plain greeting ("Hi", "hello", "hey", "start"...) always takes the customer
+ * back to the main menu, discarding any half-finished booking.
+ */
+const GREETING_KEYWORDS = /^(hi+|hii+|hello+|hey+|hlo|helo|hola|namaste|start|restart|reset|good\s*(morning|afternoon|evening|night))[\s!.,]*$/i;
+
+/**
+ * If true, a greeting also ends a HUMAN_HANDOFF so a customer is never stuck in
+ * silence. Set to false if you want staff conversations to stay untouched
+ * until a person resets them.
+ */
+const GREETING_RESETS_HANDOFF = true;
 
 async function handleSessionExpired(ctx) {
   const { message, session } = ctx;
@@ -163,6 +179,32 @@ async function processInboundMessage(whatsappNumber, normalizedMessage) {
       await renderMainMenu(ctx);
     } else {
       await handleSessionExpired(ctx);
+    }
+    await touchSession(session);
+    return;
+  }
+
+  // Greeting ("Hi", "hello", ...): always return to the main menu, from any state.
+  // This runs BEFORE the handoff check so a customer who was handed to support
+  // (for example after an error) is not left in silence.
+  const greetingText = (normalizedMessage.text || '').trim();
+  const isGreeting = GREETING_KEYWORDS.test(greetingText) && !normalizedMessage.interactiveId;
+  const inHandoff = session.humanHandoff || session.state === STATES.HUMAN_HANDOFF;
+  if (
+    isGreeting &&
+    session.state !== STATES.LANGUAGE_SELECTION &&
+    (!inHandoff || GREETING_RESETS_HANDOFF)
+  ) {
+    const { transition } = require('./sessionManager');
+    session.resetDraft();
+    session.humanHandoff = false;
+    await session.save();
+    if (session.language) {
+      await transition(session, STATES.MAIN_MENU);
+      await renderMainMenu(ctx);
+    } else {
+      await transition(session, STATES.LANGUAGE_SELECTION);
+      await promptLanguageSelection(ctx);
     }
     await touchSession(session);
     return;
