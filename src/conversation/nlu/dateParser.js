@@ -89,6 +89,13 @@ function normalizeDateText(raw) {
  * titles such as "Sun, 4 Oct".
  */
 function resolveDatePhrase(phrase) {
+  const whole = resolveDateText(phrase);
+  if (whole || !/\n/.test(String(phrase || ''))) return whole;
+  // A tapped calendar row can arrive as "Wed, 7 Oct\n7 October 2026" (title + description).
+  return resolveDateText(String(phrase).split(/\r?\n/)[0]);
+}
+
+function resolveDateText(phrase) {
   if (!phrase) return null;
   const p0 = String(phrase).trim().toLowerCase();
   if (!p0) return null;
@@ -158,7 +165,7 @@ function resolveTimePhrase(phrase) {
   if (!phrase) return null;
   let p = String(phrase).trim().toLowerCase();
   p = p.replace(/\b([ap])\.\s?m\.?/g, '$1m');                       // a.m. -> am
-  p = p.replace(/o['’]?\s*clock|\bclock\b|\bhrs?\b|\bat\b/g, ' ');  // o'clock, hrs, at
+  p = p.replace(/o['’]?\s*clock|(?<![0-9])0\s*clock|\bclock\b|\bhrs?\b|\bat\b/g, ' ');  // o'clock (also typed as "0 clock"), hrs, at
   p = p.replace(/\s+/g, ' ').trim();
 
   const valid = (hour, minute) => hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
