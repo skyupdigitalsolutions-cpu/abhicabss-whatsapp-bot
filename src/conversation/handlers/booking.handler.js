@@ -32,7 +32,6 @@ function tOr(language, key, fallback) {
 
 /**
  * "Book a Cab": a new one-way booking that starts straight at the pickup question.
- * (The trip-type question was removed from the flow.)
  */
 async function startBooking(ctx) {
   const { session } = ctx;
@@ -48,8 +47,6 @@ async function startBooking(ctx) {
 async function promptTripType(ctx) {
   const items = TRIP_TYPES.map((tt) => ({ id: tt.id, number: tt.number, label: t(ctx.language, tt.key) }));
   const { rows, map } = toNumbered(items);
-  // The list button needs a SHORT label (max 20 chars). It used to reuse the
-  // question text, which got cut off as "What type of trip do".
   await ctx.send.listRaw(
     t(ctx.language, 'ask_trip_type'),
     tOr(ctx.language, 'btn_select_trip', 'Select Trip'),
@@ -63,7 +60,6 @@ async function handleBookingTripType(ctx) {
   const picked = TRIP_TYPES.find((tt) => tt.id === message.interactiveId);
 
   if (!picked) {
-    // Allow free text like "one way" / natural language via nluRouter's entity hint.
     const guess = TRIP_TYPES.find((tt) => (message.text || '').toLowerCase().includes(tt.value.toLowerCase().replace('_', ' ')));
     if (!guess) {
       await ctx.send.text('ask_trip_type');
@@ -140,11 +136,6 @@ async function handleBookingDrop(ctx) {
 
 // ── STEP 4: Date (calendar list) ────────────────────────────────────
 
-/**
- * Sends the calendar: a tap-to-select WhatsApp list with Today, Tomorrow, the
- * following days, and an "Another date" row for anything else.
- * For the return date of a round trip, the list starts from the pickup day.
- */
 async function promptDate(ctx, { returnTrip = false } = {}) {
   const { language, session } = ctx;
   const labels = {
@@ -163,11 +154,6 @@ async function promptDate(ctx, { returnTrip = false } = {}) {
   );
 }
 
-/**
- * Reads the customer's date answer, whether they tapped a calendar row or typed.
- * Returns { resolved } (a dayjs date), { other: true } when they tapped
- * "Another date", or {} when it could not be understood.
- */
 function readDateAnswer(message) {
   const title = message.text || message.interactiveTitle || '';
 
@@ -186,7 +172,7 @@ async function handleBookingDate(ctx) {
 
   if (answer.other) {
     await ctx.send.raw(
-      tOr(ctx.language, 'ask_date_typed', '📅 Please type the travel date, for example 25 October or 25/10.')
+      tOr(ctx.language, 'ask_date_typed', 'Please type the travel date, for example 25 October or 25/10.')
     );
     return;
   }
@@ -202,26 +188,59 @@ async function handleBookingDate(ctx) {
     return;
   }
 
-  session.draft._pendingDate = answer.resolved.toISOString(); // temp holder until time is combined
+  session.draft._pendingDate = answer.resolved.toISOString();
   await session.save();
   await transition(session, STATES.BOOKING_TIME);
-  await ctx.send.text('ask_time');
+  await promptTime(ctx);
 }
 
-// ── STEP 5: Time ─────────────────────────────────────────────────────
+// ── STEP 5: Time (tap-to-select list) ───────────────────────────────
+
+/**
+ * Sends the time as a tap-to-select list (morning window, then afternoon/evening
+ * via "Afternoon / Evening"), plus an "Other time" row for anything typed.
+ */
+async function promptTime(ctx, { window = 'morning' } = {}) {
+  const { language } = ctx;
+  const win = window === 'evening' ? { startHour: 14, endHour: 22 } : { startHour: 5, endHour: 13 };
+  const labels = {
+    other: window === 'morning'
+      ? tOr(language, 'time_other_evening', 'Afternoon / Evening')
+      : tOr(language, 'time_other', 'Other time'),
+    otherHint: window === 'morning'
+      ? tOr(language, 'time_other_evening_hint', '2 PM onwards')
+      : tOr(language, 'time_other_hint', 'Type it, e.g. 9 PM'),
+  };
+  const rows = dateParser.getTimeListRows({ ...win, labels });
+  await ctx.send.listRaw(
+    t(language, 'ask_time'),
+    tOr(language, 'time_pick_button', 'Pick a time'),
+    [{ title: tOr(language, 'time_section_title', 'Times'), rows }]
+  );
+}
 
 async function handleBookingTime(ctx) {
   const { message, session } = ctx;
-  const time = dateParser.resolveTimePhrase(message.text || message.interactiveTitle);
+  const id = message.interactiveId || '';
+  const title = (message.text || message.interactiveTitle || '').trim();
 
-  if (!time) {
-    await ctx.send.text('ask_time');
+  // "Afternoon / Evening" opens the later window; "Other time" asks the customer to type.
+  if (id === 'TIME_OTHER' || /^afternoon ?\/ ?evening$/i.test(title)) {
+    if (/evening/i.test(title) || /afternoon/i.test(title)) {
+      await promptTime(ctx, { window: 'evening' });
+      return;
+    }
+    await ctx.send.raw(tOr(ctx.language, 'ask_time_typed', 'Please type the time, for example 9 PM or 21:30.'));
     return;
   }
 
-  // _pendingDate is an ISO instant. Parse it as an instant and convert to India
-  // time. (dayjs.tz(iso, TZ) reads the clock digits as India time instead, which
-  // moved every booking one day earlier.)
+  const time = dateParser.parseTimeReply(id) || dateParser.resolveTimePhrase(title);
+
+  if (!time) {
+    await promptTime(ctx);
+    return;
+  }
+
   const dayjsDate = dayjs(session.draft._pendingDate).tz(dateParser.TZ);
   const combined = dateParser.combineDateTime(dayjsDate, time);
 
@@ -230,6 +249,7 @@ async function handleBookingTime(ctx) {
     await transition(session, STATES.BOOKING_DATE);
     await promptDate(ctx);
     return;
+    // (date list re-shown; customer re-picks date then time)
   }
 
   session.draft.pickupAt = combined.toDate();
@@ -257,7 +277,7 @@ async function handleBookingReturnDate(ctx) {
 
   if (answer.other) {
     await ctx.send.raw(
-      tOr(ctx.language, 'ask_date_typed', '📅 Please type the travel date, for example 25 October or 25/10.')
+      tOr(ctx.language, 'ask_date_typed', 'Please type the travel date, for example 25 October or 25/10.')
     );
     return;
   }
@@ -277,21 +297,32 @@ async function handleBookingReturnDate(ctx) {
   session.draft._pendingReturnDate = answer.resolved.toISOString();
   await session.save();
   await transition(session, STATES.BOOKING_RETURN_TIME);
-  await ctx.send.text('ask_return_time');
+  await promptTime(ctx);
 }
 
 async function handleBookingReturnTime(ctx) {
   const { message, session } = ctx;
-  const time = dateParser.resolveTimePhrase(message.text || message.interactiveTitle);
+  const id = message.interactiveId || '';
+  const title = (message.text || message.interactiveTitle || '').trim();
+
+  if (id === 'TIME_OTHER' || /^afternoon ?\/ ?evening$/i.test(title)) {
+    if (/evening/i.test(title) || /afternoon/i.test(title)) {
+      await promptTime(ctx, { window: 'evening' });
+      return;
+    }
+    await ctx.send.raw(tOr(ctx.language, 'ask_time_typed', 'Please type the time, for example 9 PM or 21:30.'));
+    return;
+  }
+
+  const time = dateParser.parseTimeReply(id) || dateParser.resolveTimePhrase(title);
   if (!time) {
-    await ctx.send.text('ask_return_time');
+    await promptTime(ctx);
     return;
   }
   const dayjsDate = dayjs(session.draft._pendingReturnDate).tz(dateParser.TZ);
   const combined = dateParser.combineDateTime(dayjsDate, time);
 
   if (combined.isBefore(dayjs(session.draft.pickupAt))) {
-    // return before pickup — ask again
     await ctx.send.raw(tOr(ctx.language, 'return_before_pickup', 'The return date cannot be before your pickup date. Please choose again.'));
     await transition(session, STATES.BOOKING_RETURN_DATE);
     await promptDate(ctx, { returnTrip: true });
@@ -317,26 +348,14 @@ async function handleBookingRentalHours(ctx) {
   await showVehicleOptions(ctx);
 }
 
-// ── STEP 6: Cab type (fares come from the fare engine — never invented) ────
+// ── STEP 6: Cab type ────────────────────────────────────────────────
 
-const MAX_LIST_ROWS = 10; // WhatsApp allows at most 10 rows in one list
+const MAX_LIST_ROWS = 10;
 const CATEGORY_ORDER = ['SEDAN', 'SUV', 'PREMIUM', 'LUXURY', 'TEMPO_TRAVELLER', 'BUS'];
-
-/** Adds the numbered choices to the message text, so a customer can simply reply "1". */
-function withChoices(language, body, rows) {
-  const lines = rows.map((r) => `${r.title}${r.description ? ` — ${r.description}` : ''}`);
-  const hint = tOr(language, 'reply_number_hint', 'Reply with the number (for example 1), or tap the button below.');
-  return `${body}\n\n${lines.join('\n')}\n\n${hint}`.slice(0, 1000);
-}
 
 const titleCase = (s) =>
   String(s).toLowerCase().split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 
-/**
- * Fetches priced cab options for this trip and shows them.
- * minSeats: only offer cabs that seat at least this many (used when the passenger
- * count turned out to be more than the chosen cab holds).
- */
 async function showVehicleOptions(ctx, { minSeats = 0 } = {}) {
   const { session } = ctx;
   await ctx.send.text('checking_vehicles');
@@ -368,7 +387,6 @@ async function showVehicleOptions(ctx, { minSeats = 0 } = {}) {
 
   options.sort((a, b) => a.fare.total - b.fare.total);
 
-  // Persist minimal option data on the session so the selection survives a restart.
   session.draft._vehicleOptions = options.map((o) => ({
     vehicleId: o.vehicleId,
     vehicleName: o.vehicleName,
@@ -386,11 +404,6 @@ async function showVehicleOptions(ctx, { minSeats = 0 } = {}) {
   await sendVehicleChoices(ctx);
 }
 
-/**
- * Shows either the cab list, or — when there are more than 10 cabs, which WhatsApp
- * cannot fit in one list — a short "Cab Type" list (Sedan, SUV, Tempo Traveller...)
- * followed by the cabs of the chosen type.
- */
 async function sendVehicleChoices(ctx) {
   const { session, language } = ctx;
   const all = session.draft._vehicleOptions || [];
@@ -417,7 +430,7 @@ async function sendVehicleChoices(ctx) {
     });
     const { rows: numbered, map } = toNumbered(rows);
     await ctx.send.listRaw(
-      withChoices(language, t(language, 'ask_cab_type'), numbered),
+      t(language, 'ask_cab_type'),
       tOr(language, 'btn_select_cab_type', 'Select Cab Type'),
       [{ title: 'Cab types', rows: numbered }]
     );
@@ -430,12 +443,11 @@ async function sendVehicleChoices(ctx) {
     id: `VEHICLE_${o.vehicleId}`,
     number: i + 1,
     label: `${o.vehicleName}`.slice(0, 22),
-    // Title already shows the name, so the description only needs seats and fare.
     description: `${o.seatingCapacity} seats · ${inr(o.fare.total)}`,
   }));
   const { rows: numbered, map } = toNumbered(rows);
   await ctx.send.listRaw(
-    withChoices(language, t(language, 'select_vehicle'), numbered),
+    t(language, 'select_vehicle'),
     tOr(language, 'btn_select_vehicle', 'Select Vehicle'),
     [{ title: 'Vehicles', rows: numbered }]
   );
@@ -452,7 +464,6 @@ async function chooseVehicle(ctx, option) {
   session.markModified('draft');
   await session.save();
 
-  // Came back here because the group was bigger than the cab? Details are already known.
   if (session.draft.passengerName && session.draft.passengerCount) {
     const { showBookingReview } = require('./bookingReview.handler');
     await showBookingReview(ctx);
@@ -463,7 +474,6 @@ async function chooseVehicle(ctx, option) {
   await ctx.send.text('ask_name');
 }
 
-/** Lower-case text with any leading "1️⃣" / "2." numbering removed, for matching against names. */
 const plainChoice = (text) =>
   String(text || '').toLowerCase().replace(/^\s*\d{1,2}(?:\uFE0F?\u20E3|[.)])?\s*/, '').trim();
 
@@ -472,7 +482,6 @@ async function handleBookingVehicleSelection(ctx) {
   let id = message.interactiveId || '';
   const all = session.draft._vehicleOptions || [];
 
-  // No hidden id (only the tapped text arrived)? Work out which cab type / cab was meant by its name.
   if (!id) {
     const said = plainChoice(message.text || message.interactiveTitle);
     if (said.length >= 3) {
@@ -495,12 +504,11 @@ async function handleBookingVehicleSelection(ctx) {
     }
   }
 
-  // Tapped a cab type (Sedan / SUV / ...)
   if (id.startsWith('CAT_')) {
     const category = id.slice(4);
     const inCategory = all.filter((o) => o.category === category);
     if (inCategory.length === 1) {
-      await chooseVehicle(ctx, inCategory[0]); // only one cab of this type: no need to ask again
+      await chooseVehicle(ctx, inCategory[0]);
       return;
     }
     if (inCategory.length > 1) {
@@ -522,7 +530,7 @@ async function handleBookingVehicleSelection(ctx) {
   await chooseVehicle(ctx, option);
 }
 
-// ── STEP 7: Passenger details (name is asked in bookingReview.handler, then the count here) ──
+// ── STEP 7: Passenger details ───────────────────────────────────────
 
 async function handleBookingPassengers(ctx) {
   const { message, session } = ctx;
@@ -599,7 +607,6 @@ async function handleBookingFareConfirmation(ctx) {
     return;
   }
 
-  // Default / FARE_CONTINUE
   await transition(session, STATES.BOOKING_CUSTOMER_NAME);
   await ctx.send.text('ask_name');
 }
@@ -608,6 +615,7 @@ module.exports = {
   startBooking,
   promptTripType,
   promptDate,
+  promptTime,
   showVehicleOptions,
   handleBookingTripType,
   handleBookingPickup,
