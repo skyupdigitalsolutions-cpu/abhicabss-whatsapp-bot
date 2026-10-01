@@ -430,8 +430,8 @@ async function sendVehicleChoices(ctx) {
     id: `VEHICLE_${o.vehicleId}`,
     number: i + 1,
     label: `${o.vehicleName}`.slice(0, 22),
-    // The row title is cut off at 24 characters by WhatsApp, so the full name goes here too.
-    description: `${o.vehicleName} · ${o.seatingCapacity} seats · ${inr(o.fare.total)}`,
+    // Title already shows the name, so the description only needs seats and fare.
+    description: `${o.seatingCapacity} seats · ${inr(o.fare.total)}`,
   }));
   const { rows: numbered, map } = toNumbered(rows);
   await ctx.send.listRaw(
