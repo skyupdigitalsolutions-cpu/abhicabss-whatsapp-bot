@@ -69,6 +69,12 @@ async function handleSingleMessage(event) {
     return;
   }
 
+  // Shows what MSG91 sends when a customer taps a list row or button, so tap handling can be checked against reality.
+  logger.info(
+    { contentType: event.contentType, text: event.text, interactive: event.interactive, button: event.button },
+    '[webhook] inbound message'
+  );
+
   const normalized = normalizeInboundMessage(event);
   await processInboundMessage(whatsappNumber, normalized);
 }
