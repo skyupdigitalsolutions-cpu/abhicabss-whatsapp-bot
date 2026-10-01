@@ -18,10 +18,6 @@ function now() {
   return dayjs().tz(TZ);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers for date parsing
-// ─────────────────────────────────────────────────────────────────────────────
-
 /** "oct", "october", "sept" -> 9. Anything that isn't a real month name -> -1. */
 function monthIndex(word) {
   const w = String(word || '').toLowerCase();
@@ -78,15 +74,8 @@ function normalizeDateText(raw) {
 
 /**
  * Resolves a natural-language date phrase to a concrete date, always
- * anchored to the CURRENT India date/time — never guessed from AI
- * training data, which could be stale. Returns null (never a guess)
- * if the phrase can't be confidently resolved, so the caller can ask
- * the customer to clarify instead of booking the wrong day.
- *
- * Understands: today, tomorrow, day after tomorrow, weekdays, "25 October",
- * "25th October", "October 25th", "25th of Oct", "25/10", "25-10-2026",
- * "2026-10-25" (calendar list replies), bare day numbers ("27"), and list
- * titles such as "Sun, 4 Oct".
+ * anchored to the CURRENT India date/time. Returns null (never a guess)
+ * if the phrase can't be confidently resolved.
  */
 function resolveDatePhrase(phrase) {
   const whole = resolveDateText(phrase);
@@ -165,7 +154,7 @@ function resolveTimePhrase(phrase) {
   if (!phrase) return null;
   let p = String(phrase).trim().toLowerCase();
   p = p.replace(/\b([ap])\.\s?m\.?/g, '$1m');                       // a.m. -> am
-  p = p.replace(/o['’]?\s*clock|(?<![0-9])0\s*clock|\bclock\b|\bhrs?\b|\bat\b/g, ' ');  // o'clock (also typed as "0 clock"), hrs, at
+  p = p.replace(/o['’]?\s*clock|(?<![0-9])0\s*clock|\bclock\b|\bhrs?\b|\bat\b/g, ' ');  // o'clock (also "0 clock"), hrs, at
   p = p.replace(/\s+/g, ' ').trim();
 
   const valid = (hour, minute) => hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
@@ -220,21 +209,13 @@ function isPast(instant) {
   return instant.isBefore(now());
 }
 
-function formatForConfirmation(instant, locale = 'en') {
-  // Kept simple/locale-neutral here; locale-specific month/day names are
-  // handled in utils/i18n.js when composing the full message.
+function formatForConfirmation(instant) {
   return instant.format('dddd, D MMMM YYYY, h:mm A');
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Calendar: WhatsApp list message with the next 9 days + "Another date"
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Rows for the calendar list: 9 days starting at `from` (default today, India
  * time) plus an "Another date" row. Ids look like DATE_2026-10-25 / DATE_OTHER.
- * `labels` lets the caller pass translated text for Today / Tomorrow / Another date.
- * Keeps within WhatsApp limits: 10 rows, title <= 24 chars, description <= 72 chars.
  */
 function getDateListRows(opts = {}) {
   const L = {
@@ -268,9 +249,36 @@ function getDateListRows(opts = {}) {
 }
 
 /**
+ * Rows for the time list: slots on the hour from startHour to endHour (India time),
+ * shown as "6:00 AM", "7:00 AM", ... plus an "Other time" row for anything else.
+ */
+function getTimeListRows(opts = {}) {
+  const startHour = opts.startHour == null ? 5 : opts.startHour;
+  const endHour = opts.endHour == null ? 13 : opts.endHour;
+  const L = { other: 'Other time', otherHint: 'Type it, e.g. 4 PM', ...(opts.labels || {}) };
+  const label = (h) => {
+    const period = h < 12 ? 'AM' : 'PM';
+    const hour12 = h % 12 === 0 ? 12 : h % 12;
+    return `${hour12}:00 ${period}`;
+  };
+  const rows = [];
+  for (let h = startHour; h <= endHour && rows.length < 9; h += 1) {
+    rows.push({ id: `TIME_${String(h).padStart(2, '0')}:00`, title: label(h), description: '' });
+  }
+  rows.push({ id: 'TIME_OTHER', title: String(L.other).slice(0, 24), description: String(L.otherHint).slice(0, 72) });
+  return rows;
+}
+
+/** 'TIME_18:00' -> { hour: 18, minute: 0 }. Anything else (incl TIME_OTHER) -> null. */
+function parseTimeReply(replyId) {
+  const m = /^TIME_(\d{2}):(\d{2})$/.exec(replyId || '');
+  if (!m) return null;
+  return { hour: +m[1], minute: +m[2] };
+}
+
+/**
  * Builds a complete WhatsApp interactive LIST payload (for senders that take a
- * raw payload). Dates are computed in India time, so "Today" is correct even
- * while the server (UTC) is still on the previous day.
+ * raw payload). Dates are computed in India time.
  */
 function buildDateListMessage(to, bodyText = 'Select your travel date') {
   return {
@@ -299,6 +307,8 @@ module.exports = {
   isPast,
   formatForConfirmation,
   getDateListRows,
+  getTimeListRows,
+  parseTimeReply,
   buildDateListMessage,
   parseDateReply,
 };
