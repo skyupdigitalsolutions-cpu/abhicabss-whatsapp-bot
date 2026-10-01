@@ -30,7 +30,7 @@ async function showMyBookings(ctx) {
     id: `BOOKING_${b._id}`,
     number: i + 1,
     label: b.bookingNumber,
-    description: `${b.pickup.address} → ${b.drop?.address || '-'} · ${fmtShortDate(b.pickupAt)} · ${b.status}`,
+    description: `${b.pickup.address}  ${b.drop?.address || '-'} · ${fmtShortDate(b.pickupAt)} · ${b.status}`,
   }));
   const { rows: numberedRows, map } = toNumbered(rows);
 
@@ -75,14 +75,14 @@ async function handleBookingDetailsSelection(ctx) {
 
   const b = summary.booking;
   const body =
-    `Booking: ${b.bookingNumber}\n` +
-    `Status: ${b.status}\n` +
-    `📍 ${b.pickup.address} → ${b.drop?.address || '-'}\n` +
-    `📅 ${fmtDateTime(b.pickupAt)}\n` +
-    `🚗 ${b.vehicle.name}\n` +
-    `💰 ₹${b.fare.total}\n` +
-    (summary.payment ? `Payment: ${summary.payment.status}\n` : '') +
-    (b.driver?.name ? `Driver: ${b.driver.name} · ${b.driver.phone}\n` : '');
+    `Booking: ${b.bookingNumber}\n`+
+    `Status: ${b.status}\n`+
+    `${b.pickup.address}  ${b.drop?.address || '-'}\n`+
+    `${fmtDateTime(b.pickupAt)}\n`+
+    `${b.vehicle.name}\n`+
+    `₹${b.fare.total}\n`+
+    (summary.payment ? `Payment: ${summary.payment.status}\n`: '') +
+    (b.driver?.name ? `Driver: ${b.driver.name} · ${b.driver.phone}\n`: '');
 
   const buttons = [{ id: 'MENU_INVOICE', label: t(ctx.language, 'menu_invoice') }];
   if (['CONFIRMED', 'DRIVER_ASSIGNED', 'ONGOING'].includes(b.status)) {
