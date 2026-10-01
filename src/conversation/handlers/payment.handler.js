@@ -9,7 +9,7 @@ const { makeSender } = require('../outbound');
 const { toNumbered, rememberOptions } = require('../numberedMenu');
 const { fmtDate, fmtTime, fmtDateTime, inr } = require('../../utils/format');
 
-/** Partial Payment = PARTIAL_PAYMENT_PERCENT of the fare (default 25%), at least ₹1, never more than the fare. */
+/** Partial Payment = PARTIAL_PAYMENT_PERCENT of the fare (default 25%), at least 1, never more than the fare. */
 function partialAmount(total) {
   return Math.min(total, Math.max(1, Math.round((total * env.PARTIAL_PAYMENT_PERCENT) / 100)));
 }
@@ -18,15 +18,15 @@ function bookingDetailsText(booking) {
   const b = booking;
   const passengers = b.passenger?.passengerCount;
   return (
-    `Booking ID: *${b.bookingNumber}*\n\n` +
-    `👤 ${b.passenger?.name || ''}${passengers ? ` · ${passengers} passenger${passengers > 1 ? 's' : ''}` : ''}\n` +
-    `📍 Pickup: ${b.pickup?.address}\n` +
-    (b.drop?.address ? `🏁 Drop: ${b.drop.address}\n` : '') +
-    `📅 ${fmtDate(b.pickupAt)}\n` +
-    `⏰ ${fmtTime(b.pickupAt)}\n` +
-    (b.returnAt ? `↩️ Return: ${fmtDateTime(b.returnAt)}\n` : '') +
-    `🚗 ${b.vehicle?.name}\n\n` +
-    `💰 Total fare: ${inr(b.fare?.total)}`
+    `Booking ID: ${b.bookingNumber}\n\n` +
+    `${b.passenger?.name || ''}${passengers ? ` · ${passengers} passenger${passengers > 1 ? 's' : ''}` : ''}\n` +
+    `Pickup: ${b.pickup?.address}\n` +
+    (b.drop?.address ? `Drop: ${b.drop.address}\n` : '') +
+    `${fmtDate(b.pickupAt)}\n` +
+    `${fmtTime(b.pickupAt)}\n` +
+    (b.returnAt ? `Return: ${fmtDateTime(b.returnAt)}\n` : '') +
+    `${b.vehicle?.name}\n\n` +
+    `Total fare: ${inr(b.fare?.total)}`
   );
 }
 
@@ -42,8 +42,7 @@ async function finishAndReturnToMenu(session, send, language) {
 
 /**
  * Called by the Razorpay webhook controller (NOT by anything the customer types)
- * once a payment is verified as paid. This is the only path that confirms a booking
- * after an online payment. Sends: booking details + payment receipt.
+ * once a payment is verified as paid. Sends: booking details + payment receipt.
  */
 async function notifyPaymentCaptured(session, booking, payment, paidRupees) {
   const language = session.language || 'en';
@@ -55,11 +54,11 @@ async function notifyPaymentCaptured(session, booking, payment, paidRupees) {
   const fullyPaid = due === 0;
 
   const receipt =
-    `🧾 *Payment Receipt*\n` +
+    `Payment Receipt\n` +
     `Receipt No: RCPT-${booking.bookingNumber}-${payment?.attempt || 1}\n` +
     `Date: ${fmtDateTime(new Date())}\n` +
     `Amount paid: ${inr(paid)} (${fullyPaid ? 'Full payment' : 'Partial payment'})\n` +
-    (fullyPaid ? `Status: Fully paid ✅\n` : `Balance due: ${inr(due)}\n`) +
+    (fullyPaid ? `Status: Fully paid\n` : `Balance due: ${inr(due)}\n`) +
     (payment?.razorpayPaymentId ? `Payment ID: ${payment.razorpayPaymentId}` : '');
 
   await send.raw(
@@ -116,7 +115,6 @@ async function showPaymentOptions(ctx, booking) {
   const { session, language } = ctx;
 
   if (booking.status === 'CONFIRMED') {
-    // Double tap on Confirm after it was already paid/confirmed: show the booking, don't start over.
     await notifyBookingConfirmedPayLater(session, booking);
     return;
   }
@@ -246,7 +244,6 @@ async function handlePaymentPendingReply(ctx) {
     return;
   }
 
-  // Anything else while payment is pending — verification only ever comes from Razorpay.
   await ctx.send.text('payment_verifying');
 }
 
