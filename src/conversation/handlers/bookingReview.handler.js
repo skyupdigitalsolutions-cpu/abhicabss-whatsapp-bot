@@ -37,17 +37,17 @@ async function showBookingReview(ctx) {
 
   const body =
     `${t(ctx.language, 'booking_summary_title')}\n\n` +
-    `👤 ${d.passengerName}\n` +
-    `📱 ${session.whatsappNumber}\n` +
-    `👥 ${d.passengerCount} passenger${d.passengerCount > 1 ? 's' : ''}\n\n` +
-    `📍 Pickup: ${d.pickup.address}\n` +
-    (d.drop?.address ? `🏁 Drop: ${d.drop.address}\n` : '') +
-    `📅 ${fmtDate(d.pickupAt)}\n` +
-    `⏰ ${fmtTime(d.pickupAt)}\n` +
-    (d.returnAt ? `↩️ Return: ${fmtDateTime(d.returnAt)}\n` : '') +
-    (d.rentalHours ? `🕒 ${d.rentalHours} hours\n` : '') +
-    `🚗 ${d.vehicleName || d.vehicleClass}\n\n` +
-    `💰 Total fare: ${inr(d.fare.total)}`;
+    `${d.passengerName}\n` +
+    `${session.whatsappNumber}\n` +
+    `${d.passengerCount} passenger${d.passengerCount > 1 ? 's' : ''}\n\n` +
+    `Pickup: ${d.pickup.address}\n` +
+    (d.drop?.address ? `Drop: ${d.drop.address}\n` : '') +
+    `${fmtDate(d.pickupAt)}\n` +
+    `${fmtTime(d.pickupAt)}\n` +
+    (d.returnAt ? `Return: ${fmtDateTime(d.returnAt)}\n` : '') +
+    (d.rentalHours ? `${d.rentalHours} hours\n` : '') +
+    `${d.vehicleName || d.vehicleClass}\n\n` +
+    `Total fare: ${inr(d.fare.total)}`;
 
   const buttons = [
     { id: 'REVIEW_CONFIRM', number: 1, label: t(ctx.language, 'confirm_booking'), maxTitleLength: 20 },
@@ -141,5 +141,5 @@ module.exports = {
   showBookingReview,
   handleBookingReview,
   createBookingAndShowPaymentOptions,
-  createBookingAndStartPayment: createBookingAndShowPaymentOptions, // old name, kept for compatibility
+  createBookingAndStartPayment: createBookingAndShowPaymentOptions,
 };
