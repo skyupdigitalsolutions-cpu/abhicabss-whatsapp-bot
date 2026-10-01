@@ -49,3 +49,28 @@ describe('resolveNumericSelection', () => {
     ).toBeNull();
   });
 });
+
+describe('resolveNumericSelection: a tapped row that arrives as its visible text', () => {
+  const session = { pendingOptionsMap: { 1: 'CAT_SEDAN', 2: 'CAT_SUV', 3: 'CAT_PREMIUM', 11: 'CAT_X' } };
+
+  test('"1️⃣ Sedan" resolves to the first option', () => {
+    expect(resolveNumericSelection(session, { text: '1️⃣ Sedan', interactiveId: null })).toBe('CAT_SEDAN');
+  });
+
+  test('works when only interactiveTitle is set', () => {
+    expect(resolveNumericSelection(session, { text: null, interactiveTitle: '3️⃣ Premium', interactiveId: null })).toBe('CAT_PREMIUM');
+  });
+
+  test('"11. Name" style (10 and above) resolves', () => {
+    expect(resolveNumericSelection(session, { text: '11. Name', interactiveId: null })).toBe('CAT_X');
+  });
+
+  test('ordinary text that starts with a number is NOT treated as a menu choice', () => {
+    expect(resolveNumericSelection(session, { text: '2 adults and 1 child', interactiveId: null })).toBeNull();
+    expect(resolveNumericSelection(session, { text: '10 am', interactiveId: null })).toBeNull();
+  });
+
+  test('a real tap (hidden id present) always wins', () => {
+    expect(resolveNumericSelection(session, { text: '1️⃣ Sedan', interactiveId: 'CAT_SUV' })).toBeNull();
+  });
+});

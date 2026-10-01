@@ -1,4 +1,5 @@
 const { sendMessage } = require('./client');
+const { rememberMenu, forgetMenu } = require('../../conversation/numberedMenu');
 
 // ── Meta WhatsApp field limits (exceeding ANY of these = silent drop) ──
 const LIMIT = {
@@ -20,6 +21,7 @@ const clamp = (v, n) => (v == null ? '' : String(v)).slice(0, n);
 
 /** Plain text message. */
 async function sendText(to, body) {
+  forgetMenu(to); // a plain message means the customer is no longer answering a menu
   return sendMessage({
     to,
     type: 'text',
@@ -38,6 +40,7 @@ async function sendButtons(to, bodyText, buttons, { header, footer } = {}) {
   if (buttons.length > LIMIT.MAX_BUTTONS) {
     throw new Error('WhatsApp buttons support max 3 options; use sendList instead.');
   }
+  rememberMenu(to, buttons.map((b) => ({ id: b.id, title: clamp(b.title, LIMIT.BTN_LABEL) })));
   return sendMessage({
     to,
     type: 'interactive',
@@ -90,6 +93,7 @@ async function sendList(to, bodyText, buttonLabel, sections, { header, footer } 
     throw new Error(`sendList: ${rowCount} rows exceeds Meta's max of ${LIMIT.MAX_ROWS}.`);
   }
 
+  rememberMenu(to, cleanSections.flatMap((sec) => sec.rows));
   return sendMessage({
     to,
     type: 'interactive',
@@ -107,6 +111,7 @@ async function sendList(to, bodyText, buttonLabel, sections, { header, footer } 
 }
 
 async function sendDocument(to, link, filename, caption) {
+  forgetMenu(to);
   return sendMessage({
     to,
     type: 'document',

@@ -171,7 +171,7 @@ async function promptDate(ctx, { returnTrip = false } = {}) {
 function readDateAnswer(message) {
   const title = message.text || message.interactiveTitle || '';
 
-  if (message.interactiveId === 'DATE_OTHER' || /^another date$/i.test(title.trim())) {
+  if (message.interactiveId === 'DATE_OTHER' || /^another date/i.test(title.trim())) {
     return { other: true };
   }
 
@@ -322,6 +322,13 @@ async function handleBookingRentalHours(ctx) {
 const MAX_LIST_ROWS = 10; // WhatsApp allows at most 10 rows in one list
 const CATEGORY_ORDER = ['SEDAN', 'SUV', 'PREMIUM', 'LUXURY', 'TEMPO_TRAVELLER', 'BUS'];
 
+/** Adds the numbered choices to the message text, so a customer can simply reply "1". */
+function withChoices(language, body, rows) {
+  const lines = rows.map((r) => `${r.title}${r.description ? ` — ${r.description}` : ''}`);
+  const hint = tOr(language, 'reply_number_hint', 'Reply with the number (for example 1), or tap the button below.');
+  return `${body}\n\n${lines.join('\n')}\n\n${hint}`.slice(0, 1000);
+}
+
 const titleCase = (s) =>
   String(s).toLowerCase().split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 
@@ -410,7 +417,7 @@ async function sendVehicleChoices(ctx) {
     });
     const { rows: numbered, map } = toNumbered(rows);
     await ctx.send.listRaw(
-      t(language, 'ask_cab_type'),
+      withChoices(language, t(language, 'ask_cab_type'), numbered),
       tOr(language, 'btn_select_cab_type', 'Select Cab Type'),
       [{ title: 'Cab types', rows: numbered }]
     );
@@ -428,7 +435,7 @@ async function sendVehicleChoices(ctx) {
   }));
   const { rows: numbered, map } = toNumbered(rows);
   await ctx.send.listRaw(
-    t(language, 'select_vehicle'),
+    withChoices(language, t(language, 'select_vehicle'), numbered),
     tOr(language, 'btn_select_vehicle', 'Select Vehicle'),
     [{ title: 'Vehicles', rows: numbered }]
   );
@@ -456,10 +463,37 @@ async function chooseVehicle(ctx, option) {
   await ctx.send.text('ask_name');
 }
 
+/** Lower-case text with any leading "1️⃣" / "2." numbering removed, for matching against names. */
+const plainChoice = (text) =>
+  String(text || '').toLowerCase().replace(/^\s*\d{1,2}(?:\uFE0F?\u20E3|[.)])?\s*/, '').trim();
+
 async function handleBookingVehicleSelection(ctx) {
-  const { message, session } = ctx;
-  const id = message.interactiveId || '';
+  const { message, session, language } = ctx;
+  let id = message.interactiveId || '';
   const all = session.draft._vehicleOptions || [];
+
+  // No hidden id (only the tapped text arrived)? Work out which cab type / cab was meant by its name.
+  if (!id) {
+    const said = plainChoice(message.text || message.interactiveTitle);
+    if (said.length >= 3) {
+      const inCategoryMode = !session.draft._vehicleCategory && all.length > MAX_LIST_ROWS;
+      if (inCategoryMode) {
+        const cats = [...new Set(all.map((o) => o.category))];
+        const hit = cats.find((c) => {
+          const label = String(tOr(language, `cab_category_${c}`, titleCase(c))).toLowerCase();
+          return said.startsWith(label) || label.startsWith(said);
+        });
+        if (hit) id = `CAT_${hit}`;
+      } else {
+        const pool = session.draft._vehicleCategory ? all.filter((o) => o.category === session.draft._vehicleCategory) : all;
+        const hit = pool.find((o) => {
+          const name = o.vehicleName.toLowerCase();
+          return said.startsWith(name.slice(0, 22)) || name.startsWith(said.slice(0, 22)) || said.includes(name);
+        });
+        if (hit) id = `VEHICLE_${hit.vehicleId}`;
+      }
+    }
+  }
 
   // Tapped a cab type (Sedan / SUV / ...)
   if (id.startsWith('CAT_')) {

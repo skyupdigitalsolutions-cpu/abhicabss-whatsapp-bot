@@ -76,6 +76,7 @@ async function handleSingleMessage(event) {
   );
 
   const normalized = normalizeInboundMessage(event);
+  normalized.raw = event; // lets tap handling look anywhere in what MSG91 sent
   await processInboundMessage(whatsappNumber, normalized);
 }
 

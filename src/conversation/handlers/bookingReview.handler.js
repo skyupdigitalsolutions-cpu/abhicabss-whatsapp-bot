@@ -64,13 +64,13 @@ async function handleBookingReview(ctx) {
   const { message, session } = ctx;
   const typed = (message.text || '').trim();
 
-  if (message.interactiveId === 'REVIEW_MODIFY' || /^(modify|change|edit)$/i.test(typed)) {
+  if (message.interactiveId === 'REVIEW_MODIFY' || /\b(modify|change|edit)\b/i.test(typed)) {
     const { startBooking } = require('./booking.handler');
     await startBooking(ctx);
     return;
   }
 
-  if (message.interactiveId === 'REVIEW_CANCEL') {
+  if (message.interactiveId === 'REVIEW_CANCEL' || /\bcancel\b/i.test(typed)) {
     session.resetDraft();
     await ctx.send.text('booking_cancelled');
     const { renderMainMenu } = require('./mainMenu.handler');
@@ -80,7 +80,7 @@ async function handleBookingReview(ctx) {
   }
 
   // Only an explicit Confirm creates a booking — stray text never does.
-  if (message.interactiveId === 'REVIEW_CONFIRM' || /^(confirm|yes|ok|y)$/i.test(typed)) {
+  if (message.interactiveId === 'REVIEW_CONFIRM' || /\bconfirm\b/i.test(typed) || /^(yes|ok|y)$/i.test(typed)) {
     await createBookingAndShowPaymentOptions(ctx);
     return;
   }

@@ -79,13 +79,35 @@ describe('typed times', () => {
     ['8:30 pm', [20, 30]],
     ['20:30', [20, 30]],
     ['8 in the evening', [20, 0]],
+    ['3 o clock', [3, 0]],
+    ['3 0 clock', [3, 0]], // digit zero typed instead of the letter o
+    ['4 0 clock', [4, 0]],
+    ['10 clock', [10, 0]],
   ])('%s', (text, expected) => {
     expect(hm(text)).toEqual(expected);
+  });
+
+  test('"30 clock" is still rejected (not 3 o\'clock)', () => {
+    expect(dateParser.resolveTimePhrase('30 clock')).toBeNull();
   });
 
   test('impossible times are rejected', () => {
     for (const bad of ['25', '7:75', '13pm', 'abc']) {
       expect(dateParser.resolveTimePhrase(bad)).toBeNull();
     }
+  });
+});
+
+describe('a tapped calendar row that arrives as two lines', () => {
+  test('uses the first line (title) when the description comes with it', () => {
+    const rows = dateParser.getDateListRows();
+    const row = rows[3]; // e.g. "Sat, 3 Oct" + "3 October 2026"
+    const twoLines = `${row.title}\n${row.description}`;
+    expect(dateParser.resolveDatePhrase(twoLines).format('YYYY-MM-DD')).toBe(row.id.replace('DATE_', ''));
+  });
+
+  test('"Today" with its description resolves to today', () => {
+    const today = dateParser.now().startOf('day');
+    expect(dateParser.resolveDatePhrase('Today\n1 October 2026').isSame(today, 'day')).toBe(true);
   });
 });

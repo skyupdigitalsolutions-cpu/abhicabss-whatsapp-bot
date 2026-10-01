@@ -77,12 +77,28 @@ const request = require('supertest'); const app = require('./src/app');
 
 let fail = 0; const check = (label, ok, extra = '') => { if (!ok) fail++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${ok ? '' : '\n        ' + extra}`); };
 let n = 0;
+let lastView = [];
 async function say(number, text, tap) {
   sent.length = 0; n += 1;
   const event = { customerNumber: number, contentType: tap ? 'interactive' : 'text', uuid: `wamid.${n}`, direction: '0' };
   if (tap) event.interactive = JSON.stringify({ type: 'list_reply', list_reply: { id: tap, title: tap } }); else event.text = text;
   await receiveWebhook({ body: event }, { sendStatus() {} });
-  return view();
+  lastView = view();
+  return lastView;
+}
+async function sayEvent(number, extra) {
+  sent.length = 0; n += 1;
+  const event = { customerNumber: number, direction: '0', uuid: `wamid.${n}`, ...extra };
+  await receiveWebhook({ body: event }, { sendStatus() {} });
+  lastView = view();
+  return lastView;
+}
+// Simulates a real tap when MSG91 passes only the row's visible text (no hidden id), e.g. "1️⃣ Sedan".
+async function tapText(number, label) {
+  const titles = lastView.flatMap((m) => (m.rows ? m.rows.map((r) => r.title) : m.buttons || []));
+  const title = titles.find((t) => t.toLowerCase().includes(label.toLowerCase()));
+  if (!title) throw new Error(`no row/button containing "${label}" among ${JSON.stringify(titles)}`);
+  return say(number, title);
 }
 const view = () => sent.map((p) => p.type === 'text' ? { kind: 'text', body: p.text.body } : { kind: p.interactive.type, body: p.interactive.body.text, label: p.interactive.action.button, rows: p.interactive.action.sections?.[0]?.rows, buttons: p.interactive.action.buttons?.map((b) => b.reply.title) });
 const all = (r) => r.map((x) => x.body).join('\n');
@@ -250,6 +266,112 @@ async function toSummary(num, { time = '10 am', passengers = '2', cat = 'CAT_SED
   Object.assign(sess(H), { state: 'HUMAN_HANDOFF', humanHandoff: true });
   r = await say(H, 'need help'); check('other text in handoff stays silent', r.length === 0, JSON.stringify(r));
   r = await say(H, 'Hi'); check('"Hi" releases the chat', r[0].kind === 'list' && sess(H).humanHandoff === false, JSON.stringify(r));
+
+  console.log('--- TEXT-ONLY TAPS: MSG91 sends just the visible title, never the hidden id (your screenshot) ---');
+  const T = '919100000010';
+  r = await say(T, 'Hi');
+  r = await tapText(T, 'Book a Cab');
+  check('tap "1️⃣ Book a Cab" (text only) starts the booking', /pick you up/.test(all(r)), all(r));
+  await say(T, 'Bangalore Airport'); r = await say(T, 'Hyderabad Charminar');
+  r = await tapText(T, 'Another date');
+  check('tap "Another date" (text only) asks for a typed date', /type the travel date/.test(all(r)), all(r));
+  r = await say(T, 'Hi'); await tapText(T, 'Book a Cab'); await say(T, 'Bangalore Airport'); r = await say(T, 'Hyderabad Charminar');
+  r = await tapText(T, 'Tomorrow');
+  check('tap "Tomorrow" (text only) picks the date and asks the time', /What time/.test(all(r)), all(r));
+  r = await say(T, '10 o clock');
+  check('"10 o clock" is accepted as the time and the Cab Type list appears', r[r.length - 1].kind === 'list' && /cab type/i.test(r[r.length - 1].body), JSON.stringify(r));
+  r = await tapText(T, 'Premium');
+  check('tap "3️⃣ Premium" (text only) shows the Premium cabs — NOT the cab-type list again', r[0].kind === 'list' && r[0].rows.length === 2 && /Crysta|Hycross/.test(r[0].rows[0].title + r[0].rows[1].title), JSON.stringify(r));
+  r = await tapText(T, 'Crysta');
+  check('tap a cab (text only) -> asks the passenger name', /full name/.test(all(r)), all(r));
+  await say(T, 'Anita Rao'); r = await say(T, '3');
+  check('passengers -> booking summary with the chosen cab', r[0].kind === 'button' && /Innova Crysta/.test(r[0].body) && /Anita Rao/.test(r[0].body), JSON.stringify(r));
+  r = await tapText(T, 'Confirm');
+  check('tap "1️⃣ Confirm Booking" (text only) saves the booking and shows payment options', db.bookings.some((b) => b.passenger.name === 'Anita Rao') && /Pay Later/.test((r[0].buttons || []).join()), JSON.stringify(r));
+  r = await tapText(T, 'Partial');
+  check('tap "2️⃣ Partial Payment" (text only) sends the Razorpay link', /https:\/\/rzp\.io\/i\/test/.test(all(r)), all(r));
+  const linkT = all(r).match(/plink|rzp\.io\/i\/(test\d+)/)[1].replace('test', 'plink_TEST');
+  w = await rzpWebhook(paidEvent(linkT, 'pay_TEXTONLY', rzpCalls[rzpCalls.length - 1].amount));
+  check('payment confirmed -> booking details + receipt sent', /Booking Confirmed/.test(all(w.msgs)) && /Payment Receipt/.test(all(w.msgs)) && /Innova Crysta/.test(all(w.msgs)), all(w.msgs));
+
+  const U = '919100000011';
+  await say(U, 'Hi'); await tapText(U, 'Book a Cab'); await say(U, 'A Street'); await say(U, 'B Street');
+  await say(U, 'DATE_2026-10-25'.length ? 'Today' : ''); await say(U, '10 pm'); await tapText(U, 'Sedan'); await say(U, 'Sam'); await say(U, '2');
+  r = await tapText(U, 'Confirm'); r = await tapText(U, 'Pay Later');
+  check('tap "1️⃣ ₹0 - Pay Later" (text only) confirms the booking', /Booking Confirmed/.test(all(r)) && /No payment has been taken/.test(all(r)), all(r));
+  r = await say(U, null, 'MENU_MY_BOOKING');
+  r = await tapText(U, 'ABHI');
+  check('My Booking: tapping a booking row (text only) opens its details', r.length >= 1 && /ABHI\d{6}/.test(all(r)), all(r));
+
+  console.log('--- EVERY WAY A TAP MIGHT ARRIVE, at the Cab Type step that looped on your phone ---');
+  async function toCabTypes(num) {
+    await say(num, 'Hi'); await say(num, null, 'MENU_BOOK_CAB'); await say(num, 'Bangalore Airport'); await say(num, 'Hyderabad Charminar');
+    await say(num, null, 'DATE_2026-10-25'); return say(num, '10 am');
+  }
+  const catMsg = (v) => v[v.length - 1];
+  const shapes = [
+    ['text "1️⃣ Sedan"', (row) => ({ contentType: 'text', text: row.title })],
+    ['text "Sedan" (no number)', () => ({ contentType: 'text', text: 'Sedan' })],
+    ['text "sedan" typed in lower case', () => ({ contentType: 'text', text: 'sedan' })],
+    ['text = only the description line', (row) => ({ contentType: 'text', text: row.description })],
+    ['text = title + description on two lines', (row) => ({ contentType: 'text', text: `${row.title}\n${row.description}` })],
+    ['text = the hidden id', (row) => ({ contentType: 'text', text: row.id })],
+    ['interactive reply with the id', (row) => ({ contentType: 'interactive', interactive: JSON.stringify({ type: 'list_reply', list_reply: { id: row.id, title: row.title } }) })],
+    ['text empty, id only inside another field', (row) => ({ contentType: 'interactive', text: row.title, messages: JSON.stringify([{ interactive: { list_reply: { id: row.id } } }]) })],
+    ['typed number "1"', () => ({ contentType: 'text', text: '1' })],
+  ];
+  let k = 0;
+  for (const [name, make] of shapes) {
+    const num = `91920000${String(100 + k++)}`;
+    const v = await toCabTypes(num);
+    const row = catMsg(v).rows[0]; // Sedan
+    r = await sayEvent(num, make(row));
+    check(`Sedan tapped as ${name} -> asks the passenger name (no loop)`, r.length === 1 && /full name/.test(all(r)), JSON.stringify(r));
+  }
+  // Premium has two cabs: choose the type, then a cab, each in a different shape
+  const P1 = '919200000200';
+  let v = await toCabTypes(P1);
+  r = await sayEvent(P1, { contentType: 'text', text: catMsg(v).rows[2].description });
+  check('Premium tapped by its description line -> the two Premium cabs are shown', r[0].kind === 'list' && r[0].rows.length === 2, JSON.stringify(r));
+  r = await sayEvent(P1, { contentType: 'text', text: 'Innova Crysta A/C' });
+  check('a cab tapped by its plain name -> asks the passenger name', /full name/.test(all(r)), JSON.stringify(r));
+  const P2 = '919200000201';
+  v = await toCabTypes(P2);
+  r = await sayEvent(P2, { contentType: 'text', text: catMsg(v).rows[2].title });
+  r = await sayEvent(P2, { contentType: 'text', text: r[0].rows[1].description });
+  check('a cab tapped by its description line -> asks the passenger name', /full name/.test(all(r)), JSON.stringify(r));
+
+  console.log('--- the same tolerance everywhere else ---');
+  const Q = '919200000300';
+  await say(Q, 'Hi');
+  r = await sayEvent(Q, { contentType: 'text', text: 'Book a Cab' });
+  check('main menu: "Book a Cab" without the number works', /pick you up/.test(all(r)), JSON.stringify(r));
+  await say(Q, 'Mysore'); await say(Q, 'Chennai');
+  r = await sayEvent(Q, { contentType: 'text', text: 'Another date' });
+  check('calendar: "Another date" works', /type the travel date/.test(all(r)), JSON.stringify(r));
+  r = await say(Q, 'Hi'); await say(Q, null, 'MENU_BOOK_CAB'); await say(Q, 'Mysore'); await say(Q, 'Chennai');
+  r = await sayEvent(Q, { contentType: 'text', text: 'Sun, 4 Oct\n4 October 2026' });
+  check('calendar: a date row sent as two lines works', /What time/.test(all(r)), JSON.stringify(r));
+  await say(Q, '3 0 clock');
+  r = lastView;
+  check('time "3 0 clock" (zero typed for o) moves on to Cab Type', r[r.length - 1].kind === 'list', JSON.stringify(r));
+  await sayEvent(Q, { contentType: 'text', text: 'Sedan' }); await say(Q, 'Mohan');
+  r = await say(Q, '2');
+  r = await sayEvent(Q, { contentType: 'text', text: 'Confirm Booking' });
+  check('summary: "Confirm Booking" without the number confirms', /Pay Later/.test((r[0].buttons || []).join()), JSON.stringify(r));
+  r = await sayEvent(Q, { contentType: 'text', text: 'Pay Later' });
+  check('payment: "Pay Later" without the number confirms the booking', /Booking Confirmed/.test(all(r)), JSON.stringify(r));
+
+  console.log('--- free text is NEVER mistaken for a menu choice ---');
+  const R = '919200000400';
+  v = await toCabTypes(R);
+  await sayEvent(R, { contentType: 'text', text: 'Sedan' });
+  r = await sayEvent(R, { contentType: 'text', text: 'Sedan Kumar' });
+  check('a passenger named "Sedan Kumar" is accepted as a name, not as the Sedan menu row', /How many passengers/.test(all(r)) && sess(R).draft.passengerName === 'Sedan Kumar', JSON.stringify([r, sess(R).draft.passengerName]));
+  const S = '919200000401';
+  await say(S, 'Hi'); await say(S, null, 'MENU_BOOK_CAB');
+  r = await sayEvent(S, { contentType: 'text', text: 'Help Street, Bangalore' });
+  check('a pickup address that starts with "Help" is an address, not the Help menu row', /Where are you going/.test(all(r)) && sess(S).draft.pickup.address === 'Help Street, Bangalore', JSON.stringify(r));
 
   console.log('--- full HTTP stack ---');
   let res = await request(app).get('/webhook/whatsapp');

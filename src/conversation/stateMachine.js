@@ -30,7 +30,7 @@ const {
 } = require('./handlers/cancellation.handler');
 const { handleSupportCategory, handleSupportMessage } = require('./handlers/support.handler');
 const { routeFromIntent } = require('./handlers/nluRouter');
-const { resolveNumericSelection, toNumbered, rememberOptions } = require('./numberedMenu');
+const { resolveNumericSelection, resolveTap, toNumbered, rememberOptions } = require('./numberedMenu');
 
 /**
  * States where the last thing sent to the customer was a numbered
@@ -169,6 +169,17 @@ async function processInboundMessage(whatsappNumber, normalizedMessage) {
     await renderMainMenu({ ...ctx, language: session.language });
     await touchSession(session);
     return;
+  }
+
+  // Still no id? The customer may have tapped a row/button whose id MSG91 did not pass back.
+  // Match what they sent against the menu we last showed them.
+  if (!normalizedMessage.interactiveId) {
+    const tapped = resolveTap(whatsappNumber, {
+      text: normalizedMessage.text,
+      interactiveTitle: normalizedMessage.interactiveTitle,
+      raw: normalizedMessage.raw,
+    });
+    if (tapped) normalizedMessage.interactiveId = tapped;
   }
 
   if (wasExpired && session.state === STATES.SESSION_EXPIRED) {
