@@ -3,6 +3,7 @@ const env = require('../../config/env');
 const { getPrisma } = require('../../config/db');
 const backendHttp = require('./backendHttp');
 const { resolveDistanceKm } = require('./distanceService');
+const { loadActiveVehicles } = require('./vehicleService');
 
 // In-memory quote cache so a fare shown to the customer can be re-verified
 // at booking time without recomputing (and without letting the AI restate
@@ -39,7 +40,7 @@ function haversineKm(a, b) {
 }
 
 /**
- * getFareOptions Ã¢â‚¬â€ equivalent of POST /fares/options on the existing
+ * getFareOptions — equivalent of POST /fares/options on the existing
  * website. Returns one quote per available vehicle. This is the ONLY
  * function allowed to produce a price; the AI must never compute or
  * restate a number that didn't come from here.
@@ -58,10 +59,11 @@ async function getFareOptions({ tripType, pickup, drop, pickupAt, returnAt, rent
     return data.options.map(cacheQuote);
   }
 
-  const prisma = getPrisma();
-  const vehicles = await prisma.botVehicle.findMany({
-    where: { active: true, supportedTripTypes: { has: tripType } },
-  });
+  const vehicles = await loadActiveVehicles(tripType); // works with a Json or String[] column
+  if (!vehicles.length) {
+    const { logger } = require('../../config/logger');
+    logger.warn({ tripType }, '[fare] no active vehicles for this trip type — run: npm run seed:vehicles');
+  }
   const distanceKm = drop ? await resolveDistanceKm(pickup, drop) : null; // Google road distance, see distanceService.js
   const days =
     tripType === 'ROUND_TRIP' && returnAt
@@ -102,7 +104,7 @@ async function getFareOptions({ tripType, pickup, drop, pickupAt, returnAt, rent
 }
 
 /**
- * estimateFare Ã¢â‚¬â€ equivalent of POST /fares/estimate. Re-fetches (or
+ * estimateFare — equivalent of POST /fares/estimate. Re-fetches (or
  * re-validates) the exact quote for one vehicle, used right before
  * booking creation so the price a customer confirms is always fresh
  * and backend-verified, never an AI restatement.
@@ -125,7 +127,7 @@ async function estimateFare({ fareQuoteId, tripType, pickup, drop, pickupAt, ret
   const cached = getCachedQuote(fareQuoteId);
   if (cached && cached.vehicleId === vehicleId) return cached;
 
-  // Quote expired or missing Ã¢â‚¬â€ recompute fresh rather than trusting stale data.
+  // Quote expired or missing — recompute fresh rather than trusting stale data.
   const options = await getFareOptions({ tripType, pickup, drop, pickupAt, returnAt, rentalHours });
   const match = options.find((o) => o.vehicleId === vehicleId);
   if (!match) throw new Error('FARE_UNAVAILABLE');
