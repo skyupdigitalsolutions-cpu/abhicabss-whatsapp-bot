@@ -213,39 +213,83 @@ function formatForConfirmation(instant) {
   return instant.format('dddd, D MMMM YYYY, h:mm A');
 }
 
+const DAYS_PER_PAGE = 7;
+const MAX_DATE_PAGES = 52; // about one year ahead
+
 /**
- * Rows for the calendar list: 9 days starting at `from` (default today, India
- * time) plus an "Another date" row. Ids look like DATE_2026-10-25 / DATE_OTHER.
+ * Rows for the calendar list, one week at a time (WhatsApp lists allow 10 rows):
+ *   7 dates  +  "Next 7 days"  +  "Previous 7 days" (from page 1 on)  +  "Type a date"
+ *
+ * page 0 starts at `from` (default today, India time); page 1 is the 7 days after
+ * that, and so on. Ids: DATE_2026-10-25 for a day, DATE_PAGE_2 to change week,
+ * DATE_OTHER to type a date.
  */
 function getDateListRows(opts = {}) {
   const L = {
     today: 'Today',
     tomorrow: 'Tomorrow',
-    another: 'Another date',
-    anotherHint: 'Type it, e.g. 25 October',
+    another: 'Type a date',
+    anotherHint: 'e.g. 25 October',
+    next: 'Next 7 days',
+    prev: 'Previous 7 days',
     ...(opts.labels || {}),
   };
+  const page = Math.min(MAX_DATE_PAGES, Math.max(0, parseInt(opts.page, 10) || 0));
   const base = now().startOf('day');
-  let start = opts.from ? dayjs(opts.from).tz(TZ).startOf('day') : base;
-  if (start.isBefore(base)) start = base;
+  let first = opts.from ? dayjs(opts.from).tz(TZ).startOf('day') : base;
+  if (first.isBefore(base)) first = base;
+  const start = first.add(page * DAYS_PER_PAGE, 'day');
 
   const rows = [];
-  for (let i = 0; i < 9; i += 1) {
+  for (let i = 0; i < DAYS_PER_PAGE; i += 1) {
     const d = start.add(i, 'day');
     const diff = d.diff(base, 'day');
-    const title = diff === 0 ? L.today : diff === 1 ? L.tomorrow : d.format('ddd, D MMM');
+    const title = diff === 0 ? `${L.today}, ${d.format('D MMM')}` : diff === 1 ? `${L.tomorrow}, ${d.format('D MMM')}` : d.format('ddd, D MMM');
     rows.push({
       id: `DATE_${d.format('YYYY-MM-DD')}`,
       title: String(title).slice(0, 24),
-      description: d.format('D MMMM YYYY').slice(0, 72),
+      description: d.format('dddd, D MMMM YYYY').slice(0, 72),
+    });
+  }
+
+  if (page < MAX_DATE_PAGES) {
+    const n = start.add(DAYS_PER_PAGE, 'day');
+    rows.push({
+      id: `DATE_PAGE_${page + 1}`,
+      title: `➡️ ${L.next}`.slice(0, 24),
+      description: `${n.format('D MMM')} – ${n.add(DAYS_PER_PAGE - 1, 'day').format('D MMM')}`.slice(0, 72),
+    });
+  }
+  if (page > 0) {
+    const p = start.subtract(DAYS_PER_PAGE, 'day');
+    rows.push({
+      id: `DATE_PAGE_${page - 1}`,
+      title: `⬅️ ${L.prev}`.slice(0, 24),
+      description: `${p.format('D MMM')} – ${p.add(DAYS_PER_PAGE - 1, 'day').format('D MMM')}`.slice(0, 72),
     });
   }
   rows.push({
     id: 'DATE_OTHER',
-    title: String(L.another).slice(0, 24),
+    title: `✏️ ${L.another}`.slice(0, 24),
     description: String(L.anotherHint).slice(0, 72),
   });
   return rows;
+}
+
+/** "4 Oct – 10 Oct" for the week shown on `page` (used as the list's section title). */
+function getDatePageRange(opts = {}) {
+  const page = Math.min(MAX_DATE_PAGES, Math.max(0, parseInt(opts.page, 10) || 0));
+  const base = now().startOf('day');
+  let first = opts.from ? dayjs(opts.from).tz(TZ).startOf('day') : base;
+  if (first.isBefore(base)) first = base;
+  const start = first.add(page * DAYS_PER_PAGE, 'day');
+  return `${start.format('D MMM')} – ${start.add(DAYS_PER_PAGE - 1, 'day').format('D MMM')}`;
+}
+
+/** 'DATE_PAGE_2' -> 2. Anything else -> null. */
+function parseDatePageReply(replyId) {
+  const m = /^DATE_PAGE_(\d{1,2})$/.exec(replyId || '');
+  return m ? Math.min(MAX_DATE_PAGES, +m[1]) : null;
 }
 
 /**
@@ -307,6 +351,9 @@ module.exports = {
   isPast,
   formatForConfirmation,
   getDateListRows,
+  getDatePageRange,
+  parseDatePageReply,
+  MAX_DATE_PAGES,
   getTimeListRows,
   parseTimeReply,
   buildDateListMessage,
