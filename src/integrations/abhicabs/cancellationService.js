@@ -9,14 +9,14 @@ function withId(row) {
 
 const NON_CANCELLABLE_STATUSES = ['CANCELLED', 'COMPLETED', 'ONGOING', 'EXPIRED'];
 
-/** getAvailableActions — equivalent of GET /bookings/:id/actions. */
+/** getAvailableActions Ã¢â‚¬â€ equivalent of GET /bookings/:id/actions. */
 async function getAvailableActions(bookingId) {
   if (env.BACKEND_MODE === 'remote') {
     const { data } = await backendHttp.get(`/bookings/${bookingId}/actions`);
     return data.actions;
   }
   const prisma = getPrisma();
-  const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+  const booking = await prisma.botBooking.findUnique({ where: { id: bookingId } });
   if (!booking) return [];
   const actions = ['VIEW_DETAILS', 'INVOICE'];
   if (!NON_CANCELLABLE_STATUSES.includes(booking.status)) actions.push('CANCEL');
@@ -25,7 +25,7 @@ async function getAvailableActions(bookingId) {
 }
 
 /**
- * getCancellationQuote — equivalent of GET /bookings/:id/cancellation-quote.
+ * getCancellationQuote Ã¢â‚¬â€ equivalent of GET /bookings/:id/cancellation-quote.
  * Fee policy here is a placeholder tiered example; replace with the
  * real ABHI CABS policy once verified against the actual backend/source.
  */
@@ -36,7 +36,7 @@ async function getCancellationQuote(bookingId) {
   }
 
   const prisma = getPrisma();
-  const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+  const booking = await prisma.botBooking.findUnique({ where: { id: bookingId } });
   if (!booking) throw new Error('BOOKING_NOT_FOUND');
   if (NON_CANCELLABLE_STATUSES.includes(booking.status)) {
     throw new Error('BOOKING_NOT_CANCELLABLE');
@@ -51,7 +51,7 @@ async function getCancellationQuote(bookingId) {
   return { bookingId, fee, refundAmount, feePercent, currency: 'INR' };
 }
 
-/** cancelBooking — equivalent of POST /bookings/:id/cancel. Requires explicit confirmation upstream. */
+/** cancelBooking Ã¢â‚¬â€ equivalent of POST /bookings/:id/cancel. Requires explicit confirmation upstream. */
 async function cancelBooking(bookingId, { reason, confirmedFee, confirmedRefund }) {
   if (env.BACKEND_MODE === 'remote') {
     const { data } = await backendHttp.post(`/bookings/${bookingId}/cancel`, { reason });
@@ -59,7 +59,7 @@ async function cancelBooking(bookingId, { reason, confirmedFee, confirmedRefund 
   }
 
   const prisma = getPrisma();
-  const booking = await prisma.booking.update({
+  const booking = await prisma.botBooking.update({
     where: { id: bookingId },
     data: {
       status: 'CANCELLED',

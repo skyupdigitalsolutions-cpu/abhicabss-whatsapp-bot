@@ -39,7 +39,7 @@ function haversineKm(a, b) {
 }
 
 /**
- * getFareOptions — equivalent of POST /fares/options on the existing
+ * getFareOptions Ã¢â‚¬â€ equivalent of POST /fares/options on the existing
  * website. Returns one quote per available vehicle. This is the ONLY
  * function allowed to produce a price; the AI must never compute or
  * restate a number that didn't come from here.
@@ -59,7 +59,7 @@ async function getFareOptions({ tripType, pickup, drop, pickupAt, returnAt, rent
   }
 
   const prisma = getPrisma();
-  const vehicles = await prisma.vehicle.findMany({
+  const vehicles = await prisma.botVehicle.findMany({
     where: { active: true, supportedTripTypes: { has: tripType } },
   });
   const distanceKm = drop ? await resolveDistanceKm(pickup, drop) : null; // Google road distance, see distanceService.js
@@ -102,7 +102,7 @@ async function getFareOptions({ tripType, pickup, drop, pickupAt, returnAt, rent
 }
 
 /**
- * estimateFare — equivalent of POST /fares/estimate. Re-fetches (or
+ * estimateFare Ã¢â‚¬â€ equivalent of POST /fares/estimate. Re-fetches (or
  * re-validates) the exact quote for one vehicle, used right before
  * booking creation so the price a customer confirms is always fresh
  * and backend-verified, never an AI restatement.
@@ -125,7 +125,7 @@ async function estimateFare({ fareQuoteId, tripType, pickup, drop, pickupAt, ret
   const cached = getCachedQuote(fareQuoteId);
   if (cached && cached.vehicleId === vehicleId) return cached;
 
-  // Quote expired or missing — recompute fresh rather than trusting stale data.
+  // Quote expired or missing Ã¢â‚¬â€ recompute fresh rather than trusting stale data.
   const options = await getFareOptions({ tripType, pickup, drop, pickupAt, returnAt, rentalHours });
   const match = options.find((o) => o.vehicleId === vehicleId);
   if (!match) throw new Error('FARE_UNAVAILABLE');

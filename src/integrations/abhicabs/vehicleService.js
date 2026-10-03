@@ -3,18 +3,18 @@ const { getPrisma } = require('../../config/db');
 const backendHttp = require('./backendHttp');
 
 /**
- * getAvailableVehicles — the ONLY source of vehicle data for the bot.
+ * getAvailableVehicles Ã¢â‚¬â€ the ONLY source of vehicle data for the bot.
  * The AI/conversation layer must call this rather than ever listing
  * vehicles from memory or training data.
  */
 async function getAvailableVehicles({ tripType }) {
   if (env.BACKEND_MODE === 'remote') {
     const { data } = await backendHttp.post('/fares/options', { tripType, availabilityOnly: true });
-    return data.vehicles; // shape defined by real backend contract — verify before go-live
+    return data.vehicles; // shape defined by real backend contract Ã¢â‚¬â€ verify before go-live
   }
 
   const prisma = getPrisma();
-  const vehicles = await prisma.vehicle.findMany({
+  const vehicles = await prisma.botVehicle.findMany({
     where: { active: true, supportedTripTypes: { has: tripType } },
   });
 
@@ -33,7 +33,7 @@ async function getVehicleById(vehicleId) {
     return data;
   }
   const prisma = getPrisma();
-  return prisma.vehicle.findFirst({ where: { vehicleId, active: true } });
+  return prisma.botVehicle.findFirst({ where: { vehicleId, active: true } });
 }
 
 module.exports = { getAvailableVehicles, getVehicleById };

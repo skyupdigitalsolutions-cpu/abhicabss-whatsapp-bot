@@ -3,7 +3,7 @@ const { getPrisma } = require('../../config/db');
 const backendHttp = require('./backendHttp');
 
 /**
- * getInvoice — equivalent of GET /bookings/:id/invoice. Returns null
+ * getInvoice Ã¢â‚¬â€ equivalent of GET /bookings/:id/invoice. Returns null
  * (never a fabricated URL) if no invoice exists yet, e.g. booking not
  * yet completed/paid.
  */
@@ -19,7 +19,7 @@ async function getInvoice(bookingId) {
   }
 
   const prisma = getPrisma();
-  const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+  const booking = await prisma.botBooking.findUnique({ where: { id: bookingId } });
   if (!booking) throw new Error('BOOKING_NOT_FOUND');
   return booking.invoiceUrl || null; // populated by whatever generates invoices in this deployment
 }

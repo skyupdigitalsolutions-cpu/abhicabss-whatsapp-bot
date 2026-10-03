@@ -23,7 +23,7 @@ async function findPayment(prisma, body) {
 
   for (const id of candidates) {
     // eslint-disable-next-line no-await-in-loop
-    const payment = await prisma.payment.findUnique({ where: { razorpayOrderId: id } });
+    const payment = await prisma.botPayment.findUnique({ where: { razorpayOrderId: id } });
     if (payment) return payment;
   }
   return null;
@@ -40,11 +40,11 @@ async function processRazorpayEvent(body) {
   const payment = await findPayment(prisma, body);
   if (!payment) {
     // Normal for payment.captured / payment.failed of a payment link (the link event is the one we use).
-    logger.info({ event }, '[razorpay-webhook] no matching payment row — nothing to do');
+    logger.info({ event }, '[razorpay-webhook] no matching payment row Ã¢â‚¬â€ nothing to do');
     return;
   }
 
-  const booking = payment.bookingId ? await prisma.booking.findUnique({ where: { id: payment.bookingId } }) : null;
+  const booking = payment.bookingId ? await prisma.botBooking.findUnique({ where: { id: payment.bookingId } }) : null;
   const sessionRow = booking?.passenger?.phone
     ? await prisma.session.findUnique({ where: { whatsappNumber: booking.passenger.phone } })
     : null;
@@ -75,7 +75,7 @@ async function processRazorpayEvent(body) {
 
   if (closedUnpaid) {
     if (payment.status === 'CAPTURED') return; // never downgrade a paid payment
-    await prisma.payment.update({
+    await prisma.botPayment.update({
       where: { id: payment.id },
       data: { status: event === 'payment_link.expired' ? 'TIMEOUT' : 'CANCELLED' },
     });
@@ -87,7 +87,7 @@ async function processRazorpayEvent(body) {
     // A failed attempt on a payment link can simply be retried on the same page, so we don't
     // disturb the customer. Only older order-based payments reach here with a matching row.
     if (payment.status !== 'CAPTURED') {
-      await prisma.payment.update({
+      await prisma.botPayment.update({
         where: { id: payment.id },
         data: { status: 'FAILED', failureReason: body.payload?.payment?.entity?.error_description || 'UNKNOWN' },
       });
@@ -98,7 +98,7 @@ async function processRazorpayEvent(body) {
 /**
  * POST /webhook/razorpay
  *
- * This is the ONLY place a payment is ever marked paid from an external signal —
+ * This is the ONLY place a payment is ever marked paid from an external signal Ã¢â‚¬â€
  * never from a WhatsApp message. Requires app.js to preserve req.rawBody for
  * signature verification (same pattern as the MSG91 webhook).
  */

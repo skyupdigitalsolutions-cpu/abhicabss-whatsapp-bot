@@ -24,24 +24,24 @@ async function generateBookingNumber() {
   for (let i = 0; i < 5; i++) {
     const candidate = `ABHI${genDigits()}`;
     // eslint-disable-next-line no-await-in-loop
-    const exists = await prisma.booking.findUnique({ where: { bookingNumber: candidate } });
+    const exists = await prisma.botBooking.findUnique({ where: { bookingNumber: candidate } });
     if (!exists) return candidate;
   }
   throw new Error('BOOKING_NUMBER_GENERATION_FAILED');
 }
 
 /**
- * createBooking — the ONLY way a booking is ever created. Enforces:
+ * createBooking Ã¢â‚¬â€ the ONLY way a booking is ever created. Enforces:
  *   1. idempotencyKey uniqueness (duplicate WhatsApp message / webhook
  *      retry / double button tap returns the EXISTING booking instead
  *      of creating a second one).
  *   2. Fare re-verification against the backend fare engine right
- *      before persisting — the AI-relayed price is never trusted blindly.
+ *      before persisting Ã¢â‚¬â€ the AI-relayed price is never trusted blindly.
  */
 async function createBooking({ idempotencyKey, customerId, passenger, customerType, companyName, gstNumber, tripType, pickup, drop, pickupAt, returnAt, rentalHours, vehicleId, fareQuoteId, specialRequests }) {
   const prisma = getPrisma();
 
-  const existing = await prisma.booking.findUnique({ where: { idempotencyKey } });
+  const existing = await prisma.botBooking.findUnique({ where: { idempotencyKey } });
   if (existing) return { booking: withId(existing), created: false };
 
   if (env.BACKEND_MODE === 'remote') {
@@ -56,7 +56,7 @@ async function createBooking({ idempotencyKey, customerId, passenger, customerTy
     );
     // The remote backend is expected to also honor Idempotency-Key.
     // Mirror the record locally for the bot's own session/lookup needs.
-    const mirrored = await prisma.booking.create({ data: { ...data, idempotencyKey } });
+    const mirrored = await prisma.botBooking.create({ data: { ...data, idempotencyKey } });
     return { booking: withId(mirrored), created: true };
   }
 
@@ -64,7 +64,7 @@ async function createBooking({ idempotencyKey, customerId, passenger, customerTy
   const bookingNumber = await generateBookingNumber();
 
   try {
-    const booking = await prisma.booking.create({
+    const booking = await prisma.botBooking.create({
       data: {
         bookingNumber,
         channel: 'WHATSAPP',
@@ -90,7 +90,7 @@ async function createBooking({ idempotencyKey, customerId, passenger, customerTy
   } catch (err) {
     // Race condition: two near-simultaneous requests with the same key.
     if (isUniqueConstraintError(err) && err.meta?.target?.includes('idempotencyKey')) {
-      const raceWinner = await prisma.booking.findUnique({ where: { idempotencyKey } });
+      const raceWinner = await prisma.botBooking.findUnique({ where: { idempotencyKey } });
       return { booking: withId(raceWinner), created: false };
     }
     throw err;
@@ -103,7 +103,7 @@ async function getBookingById(bookingId) {
     return data;
   }
   const prisma = getPrisma();
-  return withId(await prisma.booking.findUnique({ where: { id: bookingId } }));
+  return withId(await prisma.botBooking.findUnique({ where: { id: bookingId } }));
 }
 
 async function getBookingByNumber(bookingNumber) {
@@ -112,7 +112,7 @@ async function getBookingByNumber(bookingNumber) {
     return data;
   }
   const prisma = getPrisma();
-  return withId(await prisma.booking.findUnique({ where: { bookingNumber } }));
+  return withId(await prisma.botBooking.findUnique({ where: { bookingNumber } }));
 }
 
 async function getBookingsForCustomer(customerId, { limit = 5 } = {}) {
@@ -121,7 +121,7 @@ async function getBookingsForCustomer(customerId, { limit = 5 } = {}) {
     return data;
   }
   const prisma = getPrisma();
-  const rows = await prisma.booking.findMany({
+  const rows = await prisma.botBooking.findMany({
     where: { customerId },
     orderBy: { createdAt: 'desc' },
     take: limit,
@@ -135,7 +135,7 @@ async function getBookingSummary(bookingId) {
     return data;
   }
   const prisma = getPrisma();
-  const booking = await prisma.booking.findUnique({ where: { id: bookingId }, include: { payment: true } });
+  const booking = await prisma.botBooking.findUnique({ where: { id: bookingId }, include: { payment: true } });
   if (!booking) return null;
   return {
     booking: withId(booking),
@@ -150,7 +150,7 @@ async function updateBookingStatus(bookingId, status, extra = {}) {
     return data;
   }
   const prisma = getPrisma();
-  return withId(await prisma.booking.update({ where: { id: bookingId }, data: { status, ...extra } }));
+  return withId(await prisma.botBooking.update({ where: { id: bookingId }, data: { status, ...extra } }));
 }
 
 module.exports = {
