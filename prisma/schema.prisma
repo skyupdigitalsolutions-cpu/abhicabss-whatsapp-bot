@@ -16,7 +16,197 @@ model Customer {
   customerType       String   @default("RETAIL")
   companyName        String?
   gstNumber          String?
+  lastInteractionAt  DateTime @default(now())generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+model Customer {
+  id                 String   @id @default(uuid())
+  whatsappNumber     String   @unique
+  name               String?
+  email              String?
+  preferredLanguage  String   @default("en")
+  customerType       String   @default("RETAIL")
+  companyName        String?
+  gstNumber          String?
   lastInteractionAt  DateTime @default(now())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @default(now())
+
+  sessions       Session[]
+  botBookings    BotBooking[]
+  supportTickets SupportTicket[]
+
+  @@map("bot_customers")
+}
+
+model Session {
+  id                    String    @id @default(uuid())
+  whatsappNumber        String    @unique
+  customerId            String?
+  customer              Customer? @relation(fields: [customerId], references: [id])
+
+  language              String?
+  state                 String    @default("LANGUAGE_SELECTION")
+  previousState         String?
+
+  draft                 Json      @default("{}")
+
+  activeBookingId       String?
+  activePaymentId       String?
+  pendingIdempotencyKey String?
+
+  pendingOptionsMap     Json      @default("{}")
+
+  humanHandoff          Boolean   @default(false)
+  handoffReason         String?
+
+  lastMessageAt         DateTime  @default(now())
+  expiresAt             DateTime?
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @default(now())
+
+  @@map("bot_sessions")
+}
+
+model BotVehicle {
+  id                    String   @id @default(uuid())
+  vehicleId             String   @unique
+  name                  String
+  category              String
+  seatingCapacity       Int
+  ac                    Boolean  @default(true)
+
+  // ONE_WAY, ROUND_TRIP, AIRPORT, HOURLY
+  supportedTripTypes    Json     @default("[]")
+
+  baseFarePerKm         Float
+  baseFarePerHour       Float?
+  driverAllowancePerDay Float    @default(300)
+  active                Boolean  @default(true)
+
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @default(now())
+
+  @@map("bot_vehicles")
+}
+
+model BotBooking {
+  id              String   @id @default(uuid())
+  bookingNumber   String   @unique
+  channel         String   @default("WHATSAPP")
+
+  customerId      String
+  customer        Customer @relation(fields: [customerId], references: [id])
+
+  passenger       Json
+  customerType    String   @default("RETAIL")
+  companyName     String?
+  gstNumber       String?
+
+  tripType        String
+  pickup          Json
+  drop            Json?
+  pickupAt        DateTime
+  returnAt        DateTime?
+  rentalHours     Int?
+
+  vehicle         Json
+  fare            Json
+
+  status          String   @default("CREATED")
+  driver          Json?
+  liveLocation    Json?
+
+  paymentId       String?  @unique
+  payment         BotPayment? @relation(fields: [paymentId], references: [id])
+
+  cancellation    Json?
+  invoiceUrl      String?
+  specialRequests String?
+
+  idempotencyKey  String   @unique
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now())
+
+  @@map("bot_bookings")
+}
+
+model BotPayment {
+  id                 String   @id @default(uuid())
+  bookingId          String?
+
+  razorpayOrderId    String   @unique
+  razorpayPaymentId  String?
+  razorpaySignature  String?
+
+  amount             Int
+  currency            String   @default("INR")
+  status              String   @default("CREATED")
+
+  attempt            Int      @default(1)
+  verifiedAt         DateTime?
+  failureReason      String?
+
+  idempotencyKey     String   @unique
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @default(now())
+
+  booking             BotBooking?
+
+  @@index([bookingId])
+  @@map("bot_payments")
+}
+
+model SupportTicket {
+  id               String   @id @default(uuid())
+  customerId       String
+  customer         Customer @relation(fields: [customerId], references: [id])
+
+  whatsappNumber   String
+  name             String?
+  bookingId        String?
+  category         String
+  message          String
+  conversationId   String
+  status           String   @default("OPEN")
+  assignedTo       String?
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now())
+
+  @@map("bot_support_tickets")
+}
+
+model ProcessedMessage {
+  id                String   @id @default(uuid())
+  whatsappMessageId String   @unique
+  whatsappNumber    String
+  processedAt       DateTime @default(now())
+
+  @@map("bot_processed_messages")
+}
+
+model AbandonedBooking {
+  id             String    @id @default(uuid())
+  whatsappNumber String
+  sessionId      String
+  snapshot       Json
+  abandonedAt    DateTime  @default(now())
+  followUpSentAt DateTime?
+  recovered      Boolean   @default(false)
+
+  createdAt      DateTime  @default(now())
+
+  @@map("bot_abandoned_bookings")
+}
   createdAt          DateTime @default(now())
   updatedAt          DateTime @default(now())
 
