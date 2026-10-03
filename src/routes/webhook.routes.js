@@ -12,7 +12,7 @@ const router = express.Router();
 // a browser to confirm the server is reachable.
 // BUILD_TAG changes with each release, so opening this URL in a browser shows
 // which version of the code Railway is actually running.
-const BUILD_TAG = 'final-tapresolver-2026-10-01';
+const BUILD_TAG = 'weekly-dates-location-2026-10-04';
 router.get('/whatsapp', (req, res) => res.status(200).send(`ABHI CABS WhatsApp webhook is up (build: ${BUILD_TAG})`));
 
 router.post('/whatsapp', webhookLimiter, requireMsg91WebhookSecret, receiveWebhook);
