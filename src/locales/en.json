@@ -114,5 +114,12 @@
   "booking_confirmed_paylater": "No payment has been taken yet. Amount due: {due}.",
   "driver_details_later": "Driver details will be shared once assigned.",
   "reply_menu_hint": "Type Hi any time for the main menu.",
-  "reply_number_hint": "Reply with the number (for example 1), or tap the button below."
+  "reply_number_hint": "Reply with the number (for example 1), or tap the button below.",
+  "date_type_own": "Type a date",
+  "date_next_week": "Next 7 days",
+  "date_prev_week": "Previous 7 days",
+  "location_hint_pickup": "Tap 📍 Send Location to share where you are now, or type the pickup address.",
+  "location_hint_drop": "Type the drop address, or tap 📍 Send Location and pick the place on the map.",
+  "pickup_saved": "Pickup",
+  "drop_saved": "Drop"
 }
