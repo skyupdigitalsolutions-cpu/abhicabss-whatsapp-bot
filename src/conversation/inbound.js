@@ -70,14 +70,20 @@ function normalizeInboundMessage(msg91Payload) {
     if (base.interactiveId) return base;
   }
 
-  // Location share
+  // Location share (current location, a moved pin, or a searched place)
   if (msg91Payload.latitude && msg91Payload.longitude) {
+    // A named place ("Kempegowda Airport") may carry a name/address — either flat
+    // on the event or inside Meta's raw message array that MSG91 relays.
+    const metaMsgs = safeParseJSON(msg91Payload.messages);
+    const metaLoc = Array.isArray(metaMsgs) ? metaMsgs[0]?.location : null;
+    const name = msg91Payload.locationName || metaLoc?.name || null;
+    const address = msg91Payload.address || metaLoc?.address || null;
     base.type = 'location';
     base.location = {
       latitude: parseFloat(msg91Payload.latitude),
       longitude: parseFloat(msg91Payload.longitude),
-      name: null,
-      address: null,
+      name: name && address ? `${name}, ${address}` : name,
+      address,
     };
     return base;
   }
