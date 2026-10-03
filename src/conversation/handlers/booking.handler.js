@@ -39,7 +39,42 @@ async function startBooking(ctx) {
   session.draft.tripType = 'ONE_WAY';
   await session.save();
   await transition(session, STATES.BOOKING_PICKUP);
-  await ctx.send.text('ask_pickup');
+  await promptLocation(ctx, 'pickup');
+}
+
+// ── Location prompt with a "📍 Send Location" button ────────────────
+//
+// WhatsApp shows a button that opens the map with the customer's CURRENT
+// location already marked; they can also move the pin or search a place.
+// They can still just type the address instead.
+
+async function promptLocation(ctx, which /* 'pickup' | 'drop' */) {
+  const key = which === 'drop' ? 'ask_drop' : 'ask_pickup';
+  const hintKey = which === 'drop' ? 'location_hint_drop' : 'location_hint_pickup';
+  const hint = tOr(
+    ctx.language,
+    hintKey,
+    which === 'drop'
+      ? 'Type the drop address, or tap 📍 Send Location and pick the place on the map.'
+      : 'Tap 📍 Send Location to share where you are now, or type the pickup address.'
+  );
+  const body = `${t(ctx.language, key)}\n\n${hint}`;
+  await ctx.send.locationRequest(body);
+}
+
+/**
+ * Turns the customer's answer (typed address or shared pin) into a location.
+ * A shared pin has no address text of its own, so we look one up from the
+ * coordinates (Google Geocoding) — and fall back to a Google Maps link.
+ */
+async function readLocationAnswer(message) {
+  if (message.location) {
+    const loc = locationParser.fromWhatsAppLocationMessage(message.location);
+    if (!loc.address) loc.address = await locationParser.reverseGeocode(loc.latitude, loc.longitude);
+    return loc;
+  }
+  if (message.text) return locationParser.fromTypedText(message.text);
+  return null;
 }
 
 // ── STEP 1: Trip type ──────────────────────────────────────────────
@@ -73,7 +108,7 @@ async function handleBookingTripType(ctx) {
 
   await session.save();
   await transition(session, STATES.BOOKING_PICKUP);
-  await ctx.send.text('ask_pickup');
+  await promptLocation(ctx, 'pickup');
 }
 
 // ── STEP 2: Pickup ──────────────────────────────────────────────────
@@ -81,30 +116,32 @@ async function handleBookingTripType(ctx) {
 async function handleBookingPickup(ctx) {
   const { message, session } = ctx;
 
-  let location;
-  if (message.location) {
-    location = locationParser.fromWhatsAppLocationMessage(message.location);
-  } else if (message.text) {
-    location = locationParser.fromTypedText(message.text);
-  } else {
-    await ctx.send.text('ask_pickup');
+  const location = await readLocationAnswer(message);
+  if (!location) {
+    await promptLocation(ctx, 'pickup');
     return;
   }
 
-  if (locationParser.isAmbiguous(location.address)) {
+  if (locationParser.isAmbiguous(location)) {
     await ctx.send.text('location_ambiguous');
+    await promptLocation(ctx, 'pickup');
     return;
   }
 
   session.draft.pickup = location;
+  session.draft._datePage = 0;
   await session.save();
+
+  if (message.location) {
+    await ctx.send.raw(`📍 ${tOr(ctx.language, 'pickup_saved', 'Pickup')}: ${location.address}`);
+  }
 
   if (session.draft.tripType === 'HOURLY') {
     await transition(session, STATES.BOOKING_DATE);
-    await promptDate(ctx);
+    await promptDate(ctx, { page: 0 });
   } else {
     await transition(session, STATES.BOOKING_DROP);
-    await ctx.send.text('ask_drop');
+    await promptLocation(ctx, 'drop');
   }
 }
 
@@ -113,62 +150,91 @@ async function handleBookingPickup(ctx) {
 async function handleBookingDrop(ctx) {
   const { message, session } = ctx;
 
-  let location;
-  if (message.location) {
-    location = locationParser.fromWhatsAppLocationMessage(message.location);
-  } else if (message.text) {
-    location = locationParser.fromTypedText(message.text);
-  } else {
-    await ctx.send.text('ask_drop');
+  const location = await readLocationAnswer(message);
+  if (!location) {
+    await promptLocation(ctx, 'drop');
     return;
   }
 
-  if (locationParser.isAmbiguous(location.address)) {
+  if (locationParser.isAmbiguous(location)) {
     await ctx.send.text('location_ambiguous');
+    await promptLocation(ctx, 'drop');
     return;
   }
 
   session.draft.drop = location;
+  session.draft._datePage = 0;
   await session.save();
+
+  if (message.location) {
+    await ctx.send.raw(`🏁 ${tOr(ctx.language, 'drop_saved', 'Drop')}: ${location.address}`);
+  }
+
   await transition(session, STATES.BOOKING_DATE);
-  await promptDate(ctx);
+  await promptDate(ctx, { page: 0 });
 }
 
 // ── STEP 4: Date (calendar list) ────────────────────────────────────
 
-async function promptDate(ctx, { returnTrip = false } = {}) {
+async function promptDate(ctx, { returnTrip = false, page } = {}) {
   const { language, session } = ctx;
+  const pageKey = returnTrip ? '_returnDatePage' : '_datePage';
+  const currentPage = page != null ? page : session.draft[pageKey] || 0;
+  if (session.draft[pageKey] !== currentPage) {
+    session.draft[pageKey] = currentPage;
+    session.markModified && session.markModified('draft');
+    await session.save();
+  }
+
   const labels = {
     today: tOr(language, 'date_today', 'Today'),
     tomorrow: tOr(language, 'date_tomorrow', 'Tomorrow'),
-    another: tOr(language, 'date_another', 'Another date'),
+    another: tOr(language, 'date_type_own', 'Type a date'),
     anotherHint: tOr(language, 'date_another_hint', 'Type it, e.g. 25 October'),
+    next: tOr(language, 'date_next_week', 'Next 7 days'),
+    prev: tOr(language, 'date_prev_week', 'Previous 7 days'),
   };
   const from = returnTrip && session.draft.pickupAt ? session.draft.pickupAt : undefined;
-  const rows = dateParser.getDateListRows({ from, labels });
+  const rows = dateParser.getDateListRows({ from, labels, page: currentPage });
+  const range = dateParser.getDatePageRange({ from, page: currentPage });
 
   await ctx.send.listRaw(
     t(language, returnTrip ? 'ask_return_date' : 'ask_date'),
     tOr(language, 'date_pick_button', 'Pick a date'),
-    [{ title: tOr(language, 'date_section_title', 'Dates'), rows }]
+    [{ title: range, rows }]
   );
 }
 
-function readDateAnswer(message) {
-  const title = message.text || message.interactiveTitle || '';
+function readDateAnswer(message, session, { returnTrip = false } = {}) {
+  const title = (message.text || message.interactiveTitle || '').trim();
+  const id = message.interactiveId || '';
+  const currentPage = session.draft[returnTrip ? '_returnDatePage' : '_datePage'] || 0;
 
-  if (message.interactiveId === 'DATE_OTHER' || /^another date/i.test(title.trim())) {
+  if (id === 'DATE_OTHER' || /^(✏️\s*)?(another date|type a date)/i.test(title)) {
     return { other: true };
   }
 
-  const tapped = dateParser.parseDateReply(message.interactiveId);
-  const resolved = dateParser.resolveDatePhrase(tapped || title);
+  // "Next 7 days" / "Previous 7 days" — tapped, or typed as "next" / "back"
+  const tappedPage = dateParser.parseDatePageReply(id);
+  if (tappedPage != null) return { page: tappedPage };
+  if (/^(➡️\s*)?next( 7 days| week)?$/i.test(title)) return { page: currentPage + 1 };
+  if (/^(⬅️\s*)?(prev|previous|back)( 7 days| week)?$/i.test(title)) return { page: Math.max(0, currentPage - 1) };
+
+  const tapped = dateParser.parseDateReply(id);
+  // A tapped row may come back as its title, e.g. "Today, 4 Oct" or "Tomorrow, 5 Oct"
+  const cleaned = title.replace(/^(today|tomorrow)\s*,\s*/i, '');
+  const resolved = dateParser.resolveDatePhrase(tapped || cleaned) || dateParser.resolveDatePhrase(title);
   return resolved ? { resolved } : {};
 }
 
 async function handleBookingDate(ctx) {
   const { message, session } = ctx;
-  const answer = readDateAnswer(message);
+  const answer = readDateAnswer(message, session);
+
+  if (answer.page != null) {
+    await promptDate(ctx, { page: answer.page });
+    return;
+  }
 
   if (answer.other) {
     await ctx.send.raw(
@@ -257,7 +323,7 @@ async function handleBookingTime(ctx) {
 
   if (session.draft.tripType === 'ROUND_TRIP') {
     await transition(session, STATES.BOOKING_RETURN_DATE);
-    await promptDate(ctx, { returnTrip: true });
+    await promptDate(ctx, { returnTrip: true, page: 0 });
     return;
   }
   if (session.draft.tripType === 'HOURLY') {
@@ -273,7 +339,12 @@ async function handleBookingTime(ctx) {
 
 async function handleBookingReturnDate(ctx) {
   const { message, session } = ctx;
-  const answer = readDateAnswer(message);
+  const answer = readDateAnswer(message, session, { returnTrip: true });
+
+  if (answer.page != null) {
+    await promptDate(ctx, { returnTrip: true, page: answer.page });
+    return;
+  }
 
   if (answer.other) {
     await ctx.send.raw(
