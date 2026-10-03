@@ -3,23 +3,36 @@ const dateParser = require('../src/conversation/nlu/dateParser');
 describe('calendar list', () => {
   const rows = dateParser.getDateListRows();
 
-  test('10 rows within WhatsApp limits', () => {
-    expect(rows).toHaveLength(10);
+  test('first week: 7 days + Next 7 days + Type a date, within WhatsApp limits', () => {
+    expect(rows).toHaveLength(9);
     expect(rows.every((r) => r.title.length <= 24 && r.description.length <= 72)).toBe(true);
-    expect(new Set(rows.map((r) => r.id)).size).toBe(10);
-    expect(rows[9].id).toBe('DATE_OTHER');
+    expect(new Set(rows.map((r) => r.id)).size).toBe(9);
+    expect(rows[7].id).toBe('DATE_PAGE_1');
+    expect(rows[8].id).toBe('DATE_OTHER');
   });
 
   test('first row is today and second is tomorrow, in India time', () => {
     const today = dateParser.now().startOf('day');
-    expect(rows[0].title).toBe('Today');
+    expect(rows[0].title.startsWith('Today')).toBe(true);
     expect(rows[0].id).toBe(`DATE_${today.format('YYYY-MM-DD')}`);
-    expect(rows[1].title).toBe('Tomorrow');
+    expect(rows[1].title.startsWith('Tomorrow')).toBe(true);
     expect(rows[1].id).toBe(`DATE_${today.add(1, 'day').format('YYYY-MM-DD')}`);
   });
 
+  test('next week continues straight after, with Previous and Next', () => {
+    const today = dateParser.now().startOf('day');
+    const week2 = dateParser.getDateListRows({ page: 1 });
+    expect(week2).toHaveLength(10);
+    expect(week2[0].id).toBe(`DATE_${today.add(7, 'day').format('YYYY-MM-DD')}`);
+    expect(week2[6].id).toBe(`DATE_${today.add(13, 'day').format('YYYY-MM-DD')}`);
+    expect(week2.map((r) => r.id)).toEqual(expect.arrayContaining(['DATE_PAGE_2', 'DATE_PAGE_0', 'DATE_OTHER']));
+    expect(week2.every((r) => r.title.length <= 24)).toBe(true);
+    expect(dateParser.parseDatePageReply('DATE_PAGE_2')).toBe(2);
+    expect(dateParser.parseDatePageReply('DATE_2026-10-25')).toBeNull();
+  });
+
   test('a tapped row resolves back to the same day', () => {
-    for (const r of rows.slice(0, 9)) {
+    for (const r of rows.slice(0, 7)) {
       const iso = dateParser.parseDateReply(r.id);
       expect(iso).toBe(r.id.replace('DATE_', ''));
       expect(dateParser.resolveDatePhrase(iso).format('YYYY-MM-DD')).toBe(iso);
@@ -31,7 +44,7 @@ describe('calendar list', () => {
     const start = dateParser.now().startOf('day').add(5, 'day');
     const list = dateParser.getDateListRows({ from: start.toDate() });
     expect(list[0].id).toBe(`DATE_${start.format('YYYY-MM-DD')}`);
-    expect(list[0].title).not.toBe('Today');
+    expect(list[0].title.startsWith('Today')).toBe(false);
   });
 });
 
