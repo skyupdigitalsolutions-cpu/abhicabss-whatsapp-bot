@@ -26,5 +26,12 @@
   "booking_confirmed_title": "🚕 बुकिंग कन्फर्म हो गई",
   "thank_you_booking": "🙏 ABHI CABS बुक करने के लिए धन्यवाद!",
   "congratulations": "🎉 बधाई हो! आपकी कैब बुक हो गई है.",
-  "generic_error": "मैं अभी इसकी पुष्टि नहीं कर सका। मैं आपको हमारी सहायता टीम से जोड़ रहा हूँ।"
+  "generic_error": "मैं अभी इसकी पुष्टि नहीं कर सका। मैं आपको हमारी सहायता टीम से जोड़ रहा हूँ।",
+  "date_type_own": "तारीख लिखें",
+  "date_next_week": "अगले 7 दिन",
+  "date_prev_week": "पिछले 7 दिन",
+  "location_hint_pickup": "अपनी अभी की लोकेशन भेजने के लिए 📍 Send Location दबाएँ, या पिकअप का पता लिखें।",
+  "location_hint_drop": "ड्रॉप का पता लिखें, या 📍 Send Location दबाकर मैप पर जगह चुनें।",
+  "pickup_saved": "पिकअप",
+  "drop_saved": "ड्रॉप"
 }
