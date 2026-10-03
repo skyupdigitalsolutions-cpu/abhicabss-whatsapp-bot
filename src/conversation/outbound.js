@@ -1,4 +1,5 @@
-const { sendText, sendButtons, sendList, sendDocument } = require('../integrations/whatsapp/messageBuilder');
+const { sendText, sendButtons, sendList, sendDocument, sendLocationRequest } = require('../integrations/whatsapp/messageBuilder');
+const { logger } = require('../config/logger');
 const { t } = require('../utils/i18n');
 
 /**
@@ -16,6 +17,16 @@ function makeSender(to, language) {
       sendList(to, t(language, bodyKey, opts?.vars), t(language, buttonLabelKey), sections, opts),
     listRaw: (body, buttonLabel, sections, opts) => sendList(to, body, buttonLabel, sections, opts),
     document: (link, filename, captionKey) => sendDocument(to, link, filename, captionKey ? t(language, captionKey) : undefined),
+    // "📍 Send Location" button. If MSG91/WhatsApp ever rejects it, the same
+    // question goes out as plain text so the customer is never left without a prompt.
+    locationRequest: async (body) => {
+      try {
+        return await sendLocationRequest(to, body);
+      } catch (err) {
+        logger.warn({ err: err.message }, '[outbound] location button failed — sending plain text instead');
+        return sendText(to, body);
+      }
+    },
   };
 }
 
