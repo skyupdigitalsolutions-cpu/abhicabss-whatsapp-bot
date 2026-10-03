@@ -1,7 +1,8 @@
 /* eslint-disable no-console */
 const { connectDB, disconnectDB, getPrisma } = require('../config/db');
+const { vehicleModel } = require('../integrations/abhicabs/vehicleService');
 
-// Placeholder per-km/per-hour rates Ã¢â‚¬â€ replace with ABHI CABS' real
+// Placeholder per-km/per-hour rates — replace with ABHI CABS' real
 // pricing before go-live. This seed only exists so BACKEND_MODE=local
 // has something to quote against; it is NOT the pricing source of
 // truth once the real backend/rate card is wired in (BACKEND_MODE=remote).
@@ -26,8 +27,9 @@ async function seed() {
 
   for (const v of VEHICLES) {
     const { vehicleId, ...rest } = v;
+    rest.supportedTripTypes = rest.supportedTripTypes || ['ONE_WAY', 'ROUND_TRIP', 'AIRPORT', 'HOURLY'];
     // eslint-disable-next-line no-await-in-loop
-    await prisma.botVehicle.upsert({
+    await vehicleModel(prisma).upsert({
       where: { vehicleId },
       update: { ...rest, ac: true, driverAllowancePerDay: 300, active: true },
       create: { vehicleId, ...rest, ac: true, driverAllowancePerDay: 300, active: true },
