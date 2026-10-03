@@ -119,7 +119,12 @@ async function sendDocument(to, link, filename, caption) {
   });
 }
 
+/**
+ * "📍 Send Location" button. Tapping it opens WhatsApp's map with the
+ * customer's current location; they can send it, move the pin, or search a place.
+ */
 async function sendLocationRequest(to, bodyText) {
+  forgetMenu(to); // the answer is a location or typed address, not a menu choice
   return sendMessage({
     to,
     type: 'interactive',
